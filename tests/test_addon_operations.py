@@ -40,18 +40,22 @@ class _Analysis:
 
 
 class _ShapeElement:
-    def __init__(self, shape_type: str):
+    def __init__(self, shape_type: str, curve_type: str | None = None):
         self.ShapeType = shape_type
+        if curve_type is not None:
+            self.Curve = type("Curve", (), {"TypeId": curve_type})()
 
 
 class _Shape:
     def __init__(self):
         self._elements = {
             "Vertex1": _ShapeElement("Vertex"),
-            "Edge1": _ShapeElement("Edge"),
+            "Edge1": _ShapeElement("Edge", "Part::GeomLine"),
             "Face1": _ShapeElement("Face"),
             "Face2": _ShapeElement("Face"),
+            "Solid1": _ShapeElement("Solid"),
         }
+        self.Solids = [self._elements["Solid1"]]
 
     def getElement(self, name: str):
         if name not in self._elements:
@@ -121,7 +125,7 @@ class _ObjectsFemWithSelfWeight(_ObjectsFem):
 
 class _NativeRigidBody:
     _allowed = {
-        "Name", "Label", "TypeId", "References", "ReferenceNode",
+        "Name", "Label", "TypeId", "References", "ReferenceNode", "Displacement", "Rotation",
         "TranslationalModeX", "TranslationalModeY", "TranslationalModeZ",
         "RotationalModeX", "RotationalModeY", "RotationalModeZ",
         "ForceX", "ForceY", "ForceZ", "MomentX", "MomentY", "MomentZ",
@@ -141,6 +145,24 @@ class _ObjectsFemWithRigidBody(_ObjectsFem):
     @staticmethod
     def makeConstraintRigidBody(_doc, name):
         return _NativeRigidBody(name)
+
+
+class _NativeCentrifugal:
+    _allowed = {"Name", "Label", "TypeId", "References", "RotationAxis", "RotationFrequency"}
+
+    def __setattr__(self, name, value):
+        if name not in self._allowed:
+            raise AssertionError("unexpected native centrifugal property: {}".format(name))
+        object.__setattr__(self, name, value)
+
+    def __init__(self, name: str):
+        self.Name, self.Label, self.TypeId = name, name, "Fem::ConstraintPython"
+
+
+class _ObjectsFemWithCentrifugal(_ObjectsFem):
+    @staticmethod
+    def makeConstraintCentrif(_doc, name):
+        return _NativeCentrifugal(name)
 
 
 def test_displacement_uses_freecad_11_native_property_names() -> None:
@@ -245,3 +267,127 @@ def test_remote_load_rejects_stale_or_mismatched_native_subelements() -> None:
         else:
             raise AssertionError("invalid native subelement was accepted")
         assert not app.ActiveDocument.analysis.Group
+
+
+def test_remote_displacement_uses_constraint_modes_and_rotation_vector() -> None:
+    app = _App()
+    app.Vector = lambda x, y, z: (x, y, z)
+    app.Rotation = lambda axis, Radian=0.0: ("rotation", axis, Radian)
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithRigidBody)
+    result = operations.add_remote_displacement(
+        "Analysis",
+        {
+            "references": [{"object": "Geometry", "sub_element": "Face1"}],
+            "reference_point_m": [1.0, 2.0, 3.0],
+            "translation_m": [0.1, None, 0.0],
+            "rotation_rad": [None, 0.2, None],
+        },
+    )
+
+    native = next(
+        item for item in app.ActiveDocument.analysis.Group
+        if item.TypeId == "Fem::ConstraintRigidBody"
+    )
+    assert result["kind"] == "remote_displacement"
+    assert native.ReferenceNode == (1000.0, 2000.0, 3000.0)
+    assert native.Displacement == (100.0, 0.0, 0.0)
+    assert native.Rotation[0] == "rotation"
+    assert (native.TranslationalModeX, native.TranslationalModeY, native.TranslationalModeZ) == (
+        "Constraint", "Free", "Constraint"
+    )
+    assert (native.RotationalModeX, native.RotationalModeY, native.RotationalModeZ) == (
+        "Free", "Constraint", "Free"
+    )
+    assert not hasattr(native, "ForceX")
+    assert not hasattr(native, "MomentX")
+
+
+def test_remote_displacement_rejects_stale_or_mismatched_native_subelements() -> None:
+    for subelement, shape in (("Face999", None), ("Face1", _MismatchedShape())):
+        app = _App()
+        app.Vector = lambda x, y, z: (x, y, z)
+        app.Rotation = lambda axis, Radian=0.0: ("rotation", axis, Radian)
+        if shape is not None:
+            app.ActiveDocument.geometry.Shape = shape
+        operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithRigidBody)
+        try:
+            operations.add_remote_displacement(
+                "Analysis",
+                {
+                    "references": [{"object": "Geometry", "sub_element": subelement}],
+                    "reference_point_m": [0.0, 0.0, 0.0],
+                    "translation_m": [0.001, None, None],
+                },
+            )
+        except OperationError:
+            pass
+        else:
+            raise AssertionError("invalid native subelement was accepted")
+        assert not app.ActiveDocument.analysis.Group
+
+
+def test_centrifugal_load_maps_axis_frequency_and_solid_references() -> None:
+    app = _App()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithCentrifugal)
+    result = operations.add_centrifugal_load(
+        "Analysis",
+        {
+            "references": [{"object": "Geometry", "sub_element": "Solid1"}],
+            "rotation_axis": [{"object": "Geometry", "sub_element": "Edge1"}],
+            "rotation_frequency_hz": 50.0,
+        },
+    )
+
+    native = next(
+        item for item in app.ActiveDocument.analysis.Group
+        if item.TypeId == "Fem::ConstraintPython"
+    )
+    assert result["kind"] == "centrifugal"
+    assert native.References == [(app.ActiveDocument.geometry, "Solid1")]
+    assert native.RotationAxis == [(app.ActiveDocument.geometry, "Edge1")]
+    assert native.RotationFrequency == "50.0 Hz"
+
+
+def test_centrifugal_load_rejects_stale_or_mismatched_native_subelements() -> None:
+    cases = (
+        ("Solid999", "Edge1", _Shape()),
+        ("Solid1", "Edge999", _Shape()),
+    )
+    for body_subelement, axis_subelement, shape in cases:
+        app = _App()
+        app.ActiveDocument.geometry.Shape = shape
+        operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithCentrifugal)
+        try:
+            operations.add_centrifugal_load(
+                "Analysis",
+                {
+                    "references": [{"object": "Geometry", "sub_element": body_subelement}],
+                    "rotation_axis": [{"object": "Geometry", "sub_element": axis_subelement}],
+                    "rotation_frequency_hz": 50.0,
+                },
+            )
+        except OperationError:
+            pass
+        else:
+            raise AssertionError("invalid native subelement was accepted")
+        assert not app.ActiveDocument.analysis.Group
+
+    app = _App()
+    shape = _Shape()
+    shape.Solids = [_ShapeElement("Face")]
+    app.ActiveDocument.geometry.Shape = shape
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithCentrifugal)
+    try:
+        operations.add_centrifugal_load(
+            "Analysis",
+            {
+                "references": [{"object": "Geometry", "sub_element": "Solid1"}],
+                "rotation_axis": [{"object": "Geometry", "sub_element": "Edge1"}],
+                "rotation_frequency_hz": 50.0,
+            },
+        )
+    except OperationError:
+        pass
+    else:
+        raise AssertionError("mismatched native solid was accepted")
+    assert not app.ActiveDocument.analysis.Group

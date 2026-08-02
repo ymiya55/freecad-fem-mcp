@@ -24,6 +24,7 @@ from freecad_fem_mcp.models import (  # noqa: E402
     AddBoundaryConditionRequest,
     AddLoadRequest,
     AddRemoteLoadRequest,
+    AddRemoteDisplacementRequest,
     CreateMeshRequest,
     GetResultsRequest,
     PUBLIC_REQUEST_MODELS,
@@ -31,6 +32,7 @@ from freecad_fem_mcp.models import (  # noqa: E402
 from freecad_fem_mcp.server import PUBLIC_TOOL_ACTIONS, TOOL_NAMES  # noqa: E402
 
 from FreeCADFEMMCP.protocol import ALLOWED_METHODS, Request  # noqa: E402
+from FreeCADFEMMCP.operations import FreeCADOperations, OperationError  # noqa: E402
 from FreeCADFEMMCP.service import FEMService, ServiceError  # noqa: E402
 
 
@@ -50,6 +52,8 @@ def test_public_requests_are_closed_and_have_no_action_escape_hatch() -> None:
     assert {method for method, _action in PUBLIC_TOOL_ACTIONS.values()} == set(ALLOWED_METHODS)
     assert PUBLIC_TOOL_ACTIONS["add_remote_load"] == ("remote_load", "add")
     assert "remote_load" in BRIDGE_METHODS
+    assert PUBLIC_TOOL_ACTIONS["add_remote_displacement"] == ("remote_displacement", "add")
+    assert "remote_displacement" in BRIDGE_METHODS
 
 
 def test_typed_load_and_boundary_requests_reject_extra_or_nonfinite_values() -> None:
@@ -218,12 +222,204 @@ def test_remote_load_public_model_rejects_empty_targets_and_nested_extras() -> N
         )
 
 
+def test_remote_displacement_public_model_uses_global_strict_vectors() -> None:
+    target = {"object_name": "Geometry", "subelements": ["Face1"]}
+    translation = AddRemoteDisplacementRequest(
+        analysis_id="Analysis",
+        targets=[target],
+        reference_point_m=[0.0, 0.0, 0.0],
+        translation_m=[0.001, 0.0, 0.0],
+        rotation_rad=None,
+    )
+    assert translation.translation_m == [0.001, 0.0, 0.0]
+
+    rotation = AddRemoteDisplacementRequest(
+        analysis_id="Analysis",
+        targets=[target],
+        reference_point_m=[1e9, -1e9, 0.0],
+        translation_m=None,
+        rotation_rad=[0.0, 0.5, 0.0],
+    )
+    assert rotation.rotation_rad == [0.0, 0.5, 0.0]
+
+    # A numeric zero is an explicit constrained DOF; None means Free.  Both
+    # vectors may therefore be present and all-zero as long as they are not
+    # omitted altogether.
+    constrained = AddRemoteDisplacementRequest(
+        analysis_id="Analysis",
+        targets=[target],
+        reference_point_m=[0.0, 0.0, 0.0],
+        translation_m=[0.0, 0.0, 0.0],
+        rotation_rad=[0.0, 0.0, 0.0],
+    )
+    assert constrained.translation_m == [0.0, 0.0, 0.0]
+
+    partially_free = AddRemoteDisplacementRequest(
+        analysis_id="Analysis",
+        targets=[target],
+        reference_point_m=[0.0, 0.0, 0.0],
+        translation_m=[None, 0.001, None],
+        rotation_rad=[None, None, None],
+    )
+    assert partially_free.translation_m == [None, 0.001, None]
+
+    with pytest.raises(ValidationError):
+        AddRemoteDisplacementRequest(
+            analysis_id="Analysis",
+            targets=[target],
+            reference_point_m=[0.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddRemoteDisplacementRequest(
+            analysis_id="Analysis",
+            targets=[target],
+            reference_point_m=[0.0, 0.0, 0.0],
+            translation_m=[1.0, 0.0, 0.0],
+            rotation_rad=[0.0, 0.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddRemoteDisplacementRequest(
+            analysis_id="Analysis",
+            targets=[target],
+            reference_point_m=[0.0, 0.0, 0.0],
+            translation_m=[1.0, 0.0, 0.0],
+            rotation_rad=[0.0, 0.0, 0.0],
+            coordinate_system="global",
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("reference_point_m", [1_000_000_000.1, 0.0, 0.0]),
+        ("reference_point_m", [float("nan"), 0.0, 0.0]),
+        ("reference_point_m", [float("inf"), 0.0, 0.0]),
+        ("reference_point_m", [True, 0.0, 0.0]),
+        ("reference_point_m", ["1 m", 0.0, 0.0]),
+        ("reference_point_m", [0.0, 0.0]),
+        ("reference_point_m", [0.0, 0.0, 0.0, 0.0]),
+        ("translation_m", [1_000_000_000.1, 0.0, 0.0]),
+        ("translation_m", [float("nan"), 0.0, 0.0]),
+        ("translation_m", [True, 0.0, 0.0]),
+        ("translation_m", ["1 m", 0.0, 0.0]),
+        ("translation_m", [0.0, 0.0]),
+        ("rotation_rad", [1_000_000.1, 0.0, 0.0]),
+        ("rotation_rad", [float("inf"), 0.0, 0.0]),
+        ("rotation_rad", [False, 0.0, 0.0]),
+        ("rotation_rad", ["1 deg", 0.0, 0.0]),
+        ("rotation_rad", [0.0, 0.0, 0.0, 0.0]),
+    ],
+)
+def test_remote_displacement_public_model_rejects_bad_vectors(
+    field: str, value: list[object]
+) -> None:
+    target = {"object_name": "Geometry", "subelements": ["Face1"]}
+    params: dict[str, object] = {
+        "analysis_id": "Analysis",
+        "targets": [target],
+        "reference_point_m": [0.0, 0.0, 0.0],
+        "translation_m": [0.001, 0.0, 0.0],
+        "rotation_rad": None,
+    }
+    params[field] = value
+    with pytest.raises(ValidationError):
+        AddRemoteDisplacementRequest(**params)
+
+
+def test_remote_displacement_public_model_rejects_target_and_generic_extras() -> None:
+    base = {
+        "analysis_id": "Analysis",
+        "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
+        "reference_point_m": [0.0, 0.0, 0.0],
+        "translation_m": [0.001, 0.0, 0.0],
+    }
+    empty_targets = dict(base)
+    empty_targets["targets"] = []
+    with pytest.raises(ValidationError):
+        AddRemoteDisplacementRequest(**empty_targets)
+    extra_target = dict(base)
+    extra_target["targets"] = [
+        {
+            "object_name": "Geometry",
+            "subelements": ["Face1"],
+            "property": "ReferenceNode",
+        }
+    ]
+    with pytest.raises(ValidationError):
+        AddRemoteDisplacementRequest(**extra_target)
+    with pytest.raises(ValidationError):
+        AddRemoteDisplacementRequest(**base, code="eval('x')")
+
+
+class _SecurityShapeElement:
+    def __init__(self, shape_type: str, curve_type: str | None = None) -> None:
+        self.ShapeType = shape_type
+        if curve_type is not None:
+            self.Curve = type("Curve", (), {"TypeId": curve_type})()
+
+
+class _SecurityShape:
+    def __init__(self, *, linear_axis: bool = True) -> None:
+        curve_type = "Part::GeomLine" if linear_axis else "Part::GeomCircle"
+        self._elements = {
+            "Vertex1": _SecurityShapeElement("Vertex"),
+            "Edge1": _SecurityShapeElement("Edge", curve_type),
+            "Face1": _SecurityShapeElement("Face"),
+            "Solid1": _SecurityShapeElement("Solid"),
+        }
+        self.Solids = [self._elements["Solid1"]]
+
+    def getElement(self, name: str) -> _SecurityShapeElement:
+        if name not in self._elements:
+            raise ValueError("subelement does not exist")
+        return self._elements[name]
+
+
+class _SecurityShapeObject:
+    def __init__(self, shape: _SecurityShape | None = None) -> None:
+        self.Shape = shape or _SecurityShape()
+
+
+def test_addon_native_remote_revalidation_requires_actual_same_kind_shapes() -> None:
+    obj = _SecurityShapeObject()
+    for kind in ("Vertex1", "Edge1", "Face1"):
+        FreeCADOperations._validate_remote_references([(obj, kind)])
+
+    for stale in ("Vertex999", "Edge999", "Face999", "Solid1"):
+        with pytest.raises(OperationError):
+            FreeCADOperations._validate_remote_references([(obj, stale)])
+    with pytest.raises(OperationError):
+        FreeCADOperations._validate_remote_references([(obj, "Face1"), (obj, "Edge1")])
+
+
+def test_addon_native_centrifugal_revalidation_requires_linear_axis_and_solids() -> None:
+    obj = _SecurityShapeObject()
+    FreeCADOperations._validate_centrifugal_axis([(obj, "Edge1")])
+    FreeCADOperations._validate_centrifugal_bodies([])  # [] means all solids.
+    FreeCADOperations._validate_centrifugal_bodies([(obj, "Solid1")])
+
+    for stale_axis in ("Edge999", "Face1", "Vertex1"):
+        with pytest.raises(OperationError):
+            FreeCADOperations._validate_centrifugal_axis([(obj, stale_axis)])
+    with pytest.raises(OperationError):
+        FreeCADOperations._validate_centrifugal_axis(
+            [(_SecurityShapeObject(_SecurityShape(linear_axis=False)), "Edge1")]
+        )
+    for invalid_target in ("Solid999", "Face1", "Edge1"):
+        with pytest.raises(OperationError):
+            FreeCADOperations._validate_centrifugal_bodies([(obj, invalid_target)])
+
+
 class _RecordingOperations:
     app = None
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, object]]] = []
         self.remote_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        self.remote_displacement_calls: list[
+            tuple[tuple[object, ...], dict[str, object]]
+        ] = []
+        self.centrifugal_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def add_constraint(self, analysis_id: str, kind: str, data: dict[str, object]) -> dict[str, str]:
         self.calls.append((analysis_id, kind, data))
@@ -232,6 +428,14 @@ class _RecordingOperations:
     def add_remote_load(self, *args: object, **kwargs: object) -> dict[str, str]:
         self.remote_calls.append((args, kwargs))
         return {"name": "RemoteLoad"}
+
+    def add_remote_displacement(self, *args: object, **kwargs: object) -> dict[str, str]:
+        self.remote_displacement_calls.append((args, kwargs))
+        return {"name": "RemoteDisplacement"}
+
+    def add_centrifugal_load(self, *args: object, **kwargs: object) -> dict[str, str]:
+        self.centrifugal_calls.append((args, kwargs))
+        return {"name": "Centrifugal"}
 
 
 class _EmptySelection:
@@ -455,6 +659,408 @@ def test_addon_remote_load_rejects_empty_whole_mixed_or_unsupported_targets() ->
         service(Request(15, "remote_load", params))
 
 
+def _remote_displacement_request_params() -> dict[str, object]:
+    return {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
+        "reference_point_m": [0.0, 0.0, 0.0],
+        "translation_m": [0.001, 0.0, 0.0],
+        "rotation_rad": None,
+    }
+
+
+def test_addon_accepts_remote_displacement_and_preserves_free_vs_zero() -> None:
+    service, operations = _service()
+    result = service(Request(20, "remote_displacement", _remote_displacement_request_params()))
+    assert result["remote_displacement_id"] == "RemoteDisplacement"
+    assert operations.remote_displacement_calls
+
+    for translation, rotation in (
+        (None, [0.0, 0.5, 0.0]),
+        ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+    ):
+        params = _remote_displacement_request_params()
+        params["translation_m"] = translation
+        params["rotation_rad"] = rotation
+        result = service(Request(21, "remote_displacement", params))
+        assert result["remote_displacement_id"] == "RemoteDisplacement"
+    assert len(operations.remote_displacement_calls) == 3
+
+
+def test_addon_remote_displacement_requires_at_least_one_constrained_vector() -> None:
+    service, operations = _service()
+    before = len(operations.remote_displacement_calls)
+    params = _remote_displacement_request_params()
+    params["translation_m"] = None
+    params["rotation_rad"] = None
+    with pytest.raises(ServiceError):
+        service(Request(22, "remote_displacement", params))
+    assert len(operations.remote_displacement_calls) == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("reference_point_m", [1_000_000_000.1, 0.0, 0.0]),
+        ("reference_point_m", [float("nan"), 0.0, 0.0]),
+        ("reference_point_m", [float("inf"), 0.0, 0.0]),
+        ("reference_point_m", [True, 0.0, 0.0]),
+        ("reference_point_m", ["1 m", 0.0, 0.0]),
+        ("reference_point_m", [0.0, 0.0]),
+        ("translation_m", [1_000_000_000.1, 0.0, 0.0]),
+        ("translation_m", [float("nan"), 0.0, 0.0]),
+        ("translation_m", [True, 0.0, 0.0]),
+        ("translation_m", ["1 m", 0.0, 0.0]),
+        ("translation_m", [0.0, 0.0, 0.0, 0.0]),
+        ("rotation_rad", [1_000_000.1, 0.0, 0.0]),
+        ("rotation_rad", [float("inf"), 0.0, 0.0]),
+        ("rotation_rad", [False, 0.0, 0.0]),
+        ("rotation_rad", ["1 deg", 0.0, 0.0]),
+        ("rotation_rad", [0.0, 0.0, 0.0, 0.0]),
+    ],
+)
+def test_addon_remote_displacement_rejects_bad_vectors(field: str, value: list[object]) -> None:
+    service, operations = _service()
+    before = len(operations.remote_displacement_calls)
+    params = _remote_displacement_request_params()
+    params[field] = value
+    with pytest.raises(ServiceError):
+        service(Request(23, "remote_displacement", params))
+    assert len(operations.remote_displacement_calls) == before
+
+
+@pytest.mark.parametrize(
+    "escape_field",
+    (
+        "code",
+        "inp",
+        "property",
+        "native_property",
+        "formula",
+        "path",
+        "coordinate",
+        "mode",
+        "force_n",
+        "pressure_pa",
+    ),
+)
+def test_addon_remote_displacement_rejects_generic_or_load_fields(escape_field: str) -> None:
+    service, operations = _service()
+    before = len(operations.remote_displacement_calls)
+    params = _remote_displacement_request_params()
+    params[escape_field] = "__import__('os').system('whoami')"
+    with pytest.raises(ServiceError, match="unknown"):
+        service(Request(24, "remote_displacement", params))
+    assert len(operations.remote_displacement_calls) == before
+
+
+def test_addon_remote_displacement_rejects_empty_whole_mixed_or_unsupported_targets() -> None:
+    service, operations = _service()
+    before = len(operations.remote_displacement_calls)
+    bad_targets = (
+        [],
+        [{"object_name": "Geometry", "subelements": []}],
+        [{"object_name": "Geometry", "subelements": ["Face1", "Edge1"]}],
+        [{"object_name": "Geometry", "subelements": ["Solid1"]}],
+        [{"object_name": "Geometry", "subelements": ["Face1"], "code": "x"}],
+        [{"object_name": "Geometry", "subelements": ["Face"]}],
+        [{"object_name": "Geometry", "subelements": "Face1"}],
+    )
+    for targets in bad_targets:
+        params = _remote_displacement_request_params()
+        params["targets"] = targets
+        with pytest.raises(ServiceError):
+            service(Request(25, "remote_displacement", params))
+    params = _remote_displacement_request_params()
+    params["targets"] = [
+        {"object_name": "Geometry", "subelements": ["Face{}".format(index)]}
+        for index in range(129)
+    ]
+    with pytest.raises(ServiceError):
+        service(Request(26, "remote_displacement", params))
+    assert len(operations.remote_displacement_calls) == before
+
+
+def test_acceleration_load_public_model_is_distinct_from_gravity_aliases() -> None:
+    acceleration = AddLoadRequest(
+        analysis_id="Analysis",
+        load_type="acceleration",
+        acceleration_m_s2=[0.0, -9.81, 0.0],
+    )
+    assert acceleration.acceleration_m_s2 == [0.0, -9.81, 0.0]
+
+    with pytest.raises(ValidationError):
+        AddLoadRequest(analysis_id="Analysis", load_type="acceleration")
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="acceleration",
+            acceleration_m_s2=[0.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="acceleration",
+            acceleration_m_s2=[0.0, -9.81],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="acceleration",
+            acceleration_m_s2=[float("nan"), 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="acceleration",
+            acceleration_m_s2=[True, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="acceleration",
+            acceleration_m_s2=["9.81 m/s^2", 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="acceleration",
+            acceleration_m_s2=[0.0, 9.81, 0.0],
+            force_n=1.0,
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="acceleration",
+            acceleration_m_s2=[0.0, 9.81, 0.0],
+            pressure_pa=1.0,
+        )
+
+
+def test_centrifugal_load_public_model_has_exclusive_bounded_axis_and_frequency() -> None:
+    axis = {"object_name": "Axis", "subelements": ["Edge1"]}
+    valid = AddLoadRequest(
+        analysis_id="Analysis",
+        load_type="centrifugal",
+        rotation_frequency_hz=1e9,
+        axis=axis,
+        targets=[],
+    )
+    assert valid.rotation_frequency_hz == 1e9
+
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="centrifugal",
+            rotation_frequency_hz=0.0,
+            axis=axis,
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="centrifugal",
+            rotation_frequency_hz=-1.0,
+            axis=axis,
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="centrifugal",
+            rotation_frequency_hz=1_000_000_000.1,
+            axis=axis,
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="centrifugal",
+            rotation_frequency_hz=float("nan"),
+            axis=axis,
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="centrifugal",
+            rotation_frequency_hz=True,
+            axis=axis,
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="centrifugal",
+            rotation_frequency_hz="120 rpm",
+            axis=axis,
+        )
+    for extra in (
+        {"force_n": 1.0},
+        {"pressure_pa": 1.0},
+        {"acceleration_m_s2": [0.0, 9.81, 0.0]},
+    ):
+        with pytest.raises(ValidationError):
+            AddLoadRequest(
+                analysis_id="Analysis",
+                load_type="centrifugal",
+                rotation_frequency_hz=10.0,
+                axis=axis,
+                **extra,
+            )
+
+
+def _acceleration_request_params() -> dict[str, object]:
+    return {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "load_type": "acceleration",
+        "acceleration_m_s2": [0.0, -9.81, 0.0],
+        "targets": [],
+    }
+
+
+def _centrifugal_request_params() -> dict[str, object]:
+    return {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "load_type": "centrifugal",
+        "rotation_frequency_hz": 10.0,
+        "axis": {"object_name": "Axis", "subelements": ["Edge1"]},
+        "targets": [],
+    }
+
+
+def test_addon_acceleration_route_maps_to_native_selfweight_and_rejects_conflicts() -> None:
+    service, operations = _service()
+    result = service(Request(30, "load", _acceleration_request_params()))
+    assert result["load_id"] == "Constraint"
+    assert operations.calls[-1][1] == "selfweight"
+
+    for extra in (
+        {"force_n": 1.0},
+        {"pressure_pa": 1.0},
+        {"acceleration_m_s2": [0.0, 0.0, 0.0]},
+        {"acceleration_m_s2": [float("nan"), 0.0, 0.0]},
+        {"acceleration_m_s2": [True, 0.0, 0.0]},
+        {"acceleration_m_s2": ["9.81 m/s^2", 0.0, 0.0]},
+        {"acceleration_m_s2": [0.0, 9.81]},
+        {"code": "exec(1)"},
+        {"inp": "*DLOAD"},
+        {"property": "GravityAcceleration"},
+        {"formula": "sin(t)"},
+        {"path": "C:\\tmp\\load.inp"},
+    ):
+        before = len(operations.calls)
+        params = _acceleration_request_params()
+        params.update(extra)
+        with pytest.raises(ServiceError):
+            service(Request(31, "load", params))
+        assert len(operations.calls) == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("rotation_frequency_hz", 0.0),
+        ("rotation_frequency_hz", -1.0),
+        ("rotation_frequency_hz", 1_000_000_000.1),
+        ("rotation_frequency_hz", float("nan")),
+        ("rotation_frequency_hz", float("inf")),
+        ("rotation_frequency_hz", True),
+        ("rotation_frequency_hz", "120 rpm"),
+    ],
+)
+def test_addon_centrifugal_rejects_bad_frequency(field: str, value: object) -> None:
+    service, operations = _service()
+    before = len(operations.centrifugal_calls)
+    params = _centrifugal_request_params()
+    params[field] = value
+    with pytest.raises(ServiceError):
+        service(Request(32, "load", params))
+    assert len(operations.centrifugal_calls) == before
+
+
+def test_addon_centrifugal_accepts_all_or_solid_targets_and_maps_axis() -> None:
+    service, operations = _service()
+    result = service(Request(33, "load", _centrifugal_request_params()))
+    assert result["load_id"] == "Centrifugal"
+    assert operations.centrifugal_calls
+
+    params = _centrifugal_request_params()
+    params["targets"] = [{"object_name": "Body", "subelements": ["Solid1"]}]
+    result = service(Request(34, "load", params))
+    assert result["load_id"] == "Centrifugal"
+    assert len(operations.centrifugal_calls) == 2
+
+
+def test_addon_centrifugal_rejects_axis_and_target_shape_confusion() -> None:
+    service, operations = _service()
+    before = len(operations.centrifugal_calls)
+    bad_axis = (
+        {"object_name": "Axis", "subelements": []},
+        {"object_name": "Axis", "subelements": ["Edge1", "Edge2"]},
+        {"object_name": "Axis", "subelements": ["Face1"]},
+        {"object_name": "Axis", "subelements": ["Vertex1"]},
+        {"object_name": "Axis", "subelements": ["EdgeSpline"]},
+        {"object_name": "Axis", "subelements": ["Edge1"], "code": "x"},
+    )
+    for axis in bad_axis:
+        params = _centrifugal_request_params()
+        params["axis"] = axis
+        with pytest.raises(ServiceError):
+            service(Request(35, "load", params))
+
+    bad_targets = (
+        [{"object_name": "Body", "subelements": ["Face1"]}],
+        [{"object_name": "Body", "subelements": ["Edge1"]}],
+        [{"object_name": "Body", "subelements": ["Vertex1"]}],
+        [{"object_name": "Body", "subelements": []}],
+        [{"object_name": "Body", "subelements": ["Solid1", "Face1"]}],
+        [{"object_name": "Body", "subelements": ["Solid1"], "property": "Shape"}],
+    )
+    for targets in bad_targets:
+        params = _centrifugal_request_params()
+        params["targets"] = targets
+        with pytest.raises(ServiceError):
+            service(Request(36, "load", params))
+    assert len(operations.centrifugal_calls) == before
+
+
+@pytest.mark.parametrize(
+    "escape_field",
+    (
+        "code",
+        "inp",
+        "property",
+        "native_property",
+        "formula",
+        "path",
+        "rotation_frequency_rpm",
+        "mode",
+    ),
+)
+def test_addon_centrifugal_rejects_generic_or_unit_alias_fields(escape_field: str) -> None:
+    service, operations = _service()
+    before = len(operations.centrifugal_calls)
+    params = _centrifugal_request_params()
+    params[escape_field] = "__import__('os').system('whoami')"
+    with pytest.raises(ServiceError, match="unknown"):
+        service(Request(37, "load", params))
+    assert len(operations.centrifugal_calls) == before
+
+
+def test_addon_centrifugal_rejects_other_load_fields() -> None:
+    service, operations = _service()
+    for extra in (
+        {"force_n": 1.0},
+        {"pressure_pa": 1.0},
+        {"acceleration_m_s2": [0.0, 9.81, 0.0]},
+    ):
+        before = len(operations.centrifugal_calls)
+        params = _centrifugal_request_params()
+        params.update(extra)
+        with pytest.raises(ServiceError):
+            service(Request(38, "load", params))
+        assert len(operations.centrifugal_calls) == before
+
+
 # One minimal request for every public method/action.  Unknown fields are
 # checked before dispatch, so these cases do not need a live FreeCAD document.
 _ROUTE_CASES: tuple[tuple[tuple[str, str], dict[str, object]], ...] = (
@@ -492,6 +1098,17 @@ _ROUTE_CASES: tuple[tuple[tuple[str, str], dict[str, object]], ...] = (
             "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
             "reference_point_m": [0.0, 0.0, 0.0],
             "force_n": [1.0, 0.0, 0.0],
+        },
+    ),
+    (
+        ("remote_displacement", "add"),
+        {
+            "action": "add",
+            "analysis_id": "Analysis",
+            "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
+            "reference_point_m": [0.0, 0.0, 0.0],
+            "translation_m": [0.001, 0.0, 0.0],
+            "rotation_rad": None,
         },
     ),
     (("mesh", "create"), {"action": "create", "analysis_id": "Analysis"}),

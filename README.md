@@ -25,9 +25,9 @@ FreeCAD 1.1.x の新しい `SolverCalculiX` フレームワークを、MCPクラ
 - 開いているFCStd、または許可ルート内のモデルを使用
 - GUI選択または明示的なObject/Face参照
 - 等方線形弾性材料
-- fixed / displacement / force / pressure / selfweight
+- fixed / displacement / remote displacement / force / pressure / gravity・任意加速度・遠心力
 - 用途別の`add_boundary_condition` / `add_load`と、移行用の`add_constraint`
-- FreeCADの`ConstraintRigidBody`によるglobal remote force / remote moment
+- FreeCADの`ConstraintRigidBody`によるglobal remote force / remote moment / remote displacement
 - FreeCAD 1.1のネイティブGmshメッシャー
 - FreeCAD 1.1のネイティブ`CalculiXTools`
 - `Fem::FemPostPipeline`による結果照会とGUI表示
@@ -89,7 +89,7 @@ FreeCAD 1.1.xではAddonは`%APPDATA%\FreeCAD\v1-1\Mod\FreeCADFEMMCP`へ導入�
 |---|---|
 | 状態・GUI | `get_status`, `inspect_document`, `get_selection`, `set_view`, `capture_gui` |
 | ファイル | `open_model`, `save_document` |
-| 解析構築 | `create_analysis`, `assign_material`, `add_boundary_condition`, `add_load`, `add_remote_load`, `add_constraint`, `create_mesh`, `validate_analysis` |
+| 解析構築 | `create_analysis`, `assign_material`, `add_boundary_condition`, `add_load`, `add_remote_load`, `add_remote_displacement`, `add_constraint`, `create_mesh`, `validate_analysis` |
 | ジョブ | `start_analysis`, `get_job`, `list_jobs`, `cancel_job` |
 | 結果 | `get_results`, `show_result` |
 
@@ -101,7 +101,7 @@ FreeCAD 1.1.xではAddonは`%APPDATA%\FreeCAD\v1-1\Mod\FreeCADFEMMCP`へ導入�
 2. 拘束を与える面をGUIで選択し、`get_selection`で確認します。
 3. `create_analysis`でAnalysisと新`SolverCalculiX`を作成します。
 4. `assign_material`でPa・kg/m³単位の材料値を設定します。
-5. `add_boundary_condition`でfixedまたはdisplacementを、`add_load`でforce、pressureまたはgravityを追加します。remote force / momentには、結合領域とglobal参照点を明示する`add_remote_load`を使います。通常のtargetsを省略した場合は現在のGUI選択を使いますが、remote loadのtargetsは必須です。`add_constraint`は既存クライアントの移行用です。
+5. `add_boundary_condition`でfixedまたはdisplacementを、`add_load`でforce、pressure、gravity、accelerationまたはcentrifugalを追加します。remote force / momentには`add_remote_load`、remote displacementには`add_remote_displacement`を使い、結合領域とglobal参照点を明示します。centrifugalは回転周波数をHz、回転軸を直線Edgeで指定します。通常荷重でtargetsを省略した場合は現在のGUI選択を使いますが、remote条件のtargetsは必須です。`add_constraint`は既存クライアントの移行用です。
 6. `create_mesh`でGmshジョブを開始し、`get_job`で完了を待ちます。
 7. `validate_analysis`でFreeCAD公式のCalculiX事前検証を通します。
 8. `start_analysis`でCalculiXジョブを開始します。

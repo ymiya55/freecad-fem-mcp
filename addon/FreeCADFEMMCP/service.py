@@ -139,6 +139,10 @@ class FEMService:
             self._action(params, "add")
             self._validate_remote_load_request(params)
             return
+        if method == "remote_displacement":
+            self._action(params, "add")
+            self._validate_remote_displacement_request(params)
+            return
         if not isinstance(action, str):
             # The dispatch branch will emit the same safe unsupported-action
             # error.  Avoid attempting a dictionary lookup with an unhashable
@@ -340,8 +344,11 @@ class FEMService:
                 "version": version,
                 "capabilities": {
                     "analysis_types": ["static"],
-                    "loads": ["force", "pressure", "gravity", "remote_force", "remote_moment"],
-                    "boundary_conditions": ["fixed", "displacement"],
+                    "loads": [
+                        "force", "pressure", "gravity", "acceleration", "centrifugal",
+                        "remote_force", "remote_moment",
+                    ],
+                    "boundary_conditions": ["fixed", "displacement", "remote_displacement"],
                     "connections": [],
                     "mpc_types": [],
                     "result_kinds": ["displacement", "stress", "strain", "von_mises", "reaction"],
@@ -407,9 +414,15 @@ class FEMService:
         if method == "load":
             self._action(params, "add")
             load_type = self._validate_load_request(params)
-            kind = {"force": "force", "pressure": "pressure", "gravity": "selfweight"}[load_type]
+            kind = {
+                "force": "force", "pressure": "pressure", "gravity": "selfweight",
+                "acceleration": "selfweight", "centrifugal": "centrifugal",
+            }[load_type]
             load = self._constraint_data(params, kind, strict=True)
-            result = self.operations.add_constraint(params["analysis_id"], kind, load)
+            if kind == "centrifugal":
+                result = self.operations.add_centrifugal_load(params["analysis_id"], load)
+            else:
+                result = self.operations.add_constraint(params["analysis_id"], kind, load)
             return {"load_id": result["name"], **result}
 
         if method == "boundary_condition":
@@ -424,6 +437,12 @@ class FEMService:
             remote = self._validate_remote_load_request(params)
             result = self.operations.add_remote_load(params["analysis_id"], remote)
             return {"remote_load_id": result["name"], **result}
+
+        if method == "remote_displacement":
+            self._action(params, "add")
+            remote = self._validate_remote_displacement_request(params)
+            result = self.operations.add_remote_displacement(params["analysis_id"], remote)
+            return {"remote_displacement_id": result["name"], **result}
 
         if method == "mesh":
             self._action(params, "create")
@@ -562,6 +581,25 @@ class FEMService:
         ]
 
     @classmethod
+    def _finite_optional_vector(
+        cls, value: Any, name: str, limit: float
+    ) -> list[Optional[float]]:
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            raise ServiceError("{} must contain exactly three components".format(name))
+        result: list[Optional[float]] = []
+        for component in value:
+            if component is None:
+                result.append(None)
+                continue
+            number = cls._finite_value(
+                component, "{} component".format(name), strict_numeric=True
+            )
+            if abs(number) > limit:
+                raise ServiceError("{} is outside the allowed range".format(name))
+            result.append(number)
+        return result
+
+    @classmethod
     def _compat_scalar(cls, value: Any, name: str) -> float:
         if isinstance(value, (list, tuple)):
             if not value:
@@ -594,28 +632,105 @@ class FEMService:
 
     def _validate_load_request(self, params: Mapping[str, Any]) -> str:
         load_type = params.get("load_type")
-        if load_type not in {"force", "pressure", "gravity"}:
+        if load_type not in {"force", "pressure", "gravity", "acceleration", "centrifugal"}:
             raise ServiceError("load_type is unsupported")
         value_key = {
             "force": "force_n",
             "pressure": "pressure_pa",
             "gravity": "acceleration_m_s2",
+            "acceleration": "acceleration_m_s2",
+            "centrifugal": "rotation_frequency_hz",
         }[load_type]
         allowed = {"action", "document_id", "analysis_id", "targets", "load_type", value_key}
+        if load_type == "centrifugal":
+            allowed.update({"axis", "force_n", "pressure_pa", "acceleration_m_s2"})
         self._validate_fields(params, allowed, {"action", "analysis_id", "load_type", value_key})
         self._require_identifier(params, "analysis_id")
         if "document_id" in params:
             self._require_identifier(params, "document_id")
         if "targets" in params and not isinstance(params["targets"], list):
             raise ServiceError("targets must be a bounded list")
-        if load_type == "gravity":
-            self._finite_vector(params[value_key], value_key, strict_numeric=True)
+        if load_type in {"gravity", "acceleration"}:
+            acceleration = self._finite_vector(params[value_key], value_key, strict_numeric=True)
+            if math.sqrt(sum(component * component for component in acceleration)) <= 0.0:
+                raise ServiceError("{} must have a non-zero norm".format(value_key))
+        elif load_type == "centrifugal":
+            self._optional_finite(params, value_key, positive=True)
+            self._require_centrifugal_request(params)
         else:
             value = params[value_key]
             if isinstance(value, (list, tuple)) or isinstance(value, bool):
                 raise ServiceError("{} must be a finite scalar".format(value_key))
             self._finite_value(value, value_key, strict_numeric=True)
         return load_type
+
+    def _require_centrifugal_request(self, params: Mapping[str, Any]) -> None:
+        frequency = self._finite_value(
+            params["rotation_frequency_hz"], "rotation_frequency_hz", strict_numeric=True
+        )
+        if frequency <= 0.0 or frequency > 1e9:
+            raise ServiceError("rotation_frequency_hz is outside the allowed range")
+        for forbidden in ("force_n", "pressure_pa", "acceleration_m_s2"):
+            if forbidden in params and params[forbidden] is not None:
+                raise ServiceError("{} is not valid for centrifugal load".format(forbidden))
+
+        axis = params.get("axis")
+        if not isinstance(axis, Mapping) or set(axis) != {"object_name", "subelements"}:
+            raise ServiceError("axis must contain exactly object_name and subelements")
+        object_name = axis.get("object_name")
+        if (
+            not isinstance(object_name, str)
+            or not object_name.strip()
+            or len(object_name) > 256
+            or "\x00" in object_name
+        ):
+            raise ServiceError("axis object_name is invalid")
+        subelements = axis.get("subelements")
+        if not isinstance(subelements, list) or len(subelements) != 1:
+            raise ServiceError("axis must contain exactly one subelement")
+        subelement = subelements[0]
+        if (
+            not isinstance(subelement, str)
+            or not subelement
+            or len(subelement) > 256
+            or not subelement.startswith("Edge")
+            or not subelement[4:].isascii()
+            or not subelement[4:].isdigit()
+            or int(subelement[4:]) <= 0
+        ):
+            raise ServiceError("axis subelement must be EdgeN")
+
+        targets = params.get("targets", [])
+        if not isinstance(targets, list) or len(targets) > 128:
+            raise ServiceError("targets must be a bounded list")
+        for target in targets:
+            if not isinstance(target, Mapping) or set(target) != {"object_name", "subelements"}:
+                raise ServiceError("target must contain exactly object_name and subelements")
+            target_name = target.get("object_name")
+            if (
+                not isinstance(target_name, str)
+                or not target_name.strip()
+                or len(target_name) > 256
+                or "\x00" in target_name
+            ):
+                raise ServiceError("target object_name is invalid")
+            target_subelements = target.get("subelements")
+            if (
+                not isinstance(target_subelements, list)
+                or not target_subelements
+                or len(target_subelements) > 64
+            ):
+                raise ServiceError("target subelements must be a non-empty bounded list")
+            for target_subelement in target_subelements:
+                if (
+                    not isinstance(target_subelement, str)
+                    or not target_subelement.startswith("Solid")
+                    or not target_subelement[5:].isascii()
+                    or not target_subelement[5:].isdigit()
+                    or int(target_subelement[5:]) <= 0
+                    or len(target_subelement) > 256
+                ):
+                    raise ServiceError("centrifugal targets must use SolidN")
 
     def _validate_boundary_request(self, params: Mapping[str, Any]) -> str:
         boundary_type = params.get("boundary_type")
@@ -677,7 +792,12 @@ class FEMService:
                     (
                         prefix
                         for prefix in ("Vertex", "Edge", "Face")
-                        if subelement.startswith(prefix) and subelement[len(prefix):].isdigit()
+                        if (
+                            subelement.startswith(prefix)
+                            and subelement[len(prefix):].isascii()
+                            and subelement[len(prefix):].isdigit()
+                            and int(subelement[len(prefix):]) > 0
+                        )
                     ),
                     None,
                 )
@@ -711,6 +831,85 @@ class FEMService:
             raise ServiceError("force_n or moment_n_m must contain a non-zero component")
         return data
 
+    def _validate_remote_displacement_request(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate a rigid-body kinematic reference-point request."""
+
+        allowed = {
+            "action", "document_id", "analysis_id", "targets", "reference_point_m",
+            "translation_m", "rotation_rad",
+        }
+        self._validate_fields(
+            params,
+            allowed,
+            {"action", "analysis_id", "targets", "reference_point_m"},
+        )
+        self._require_identifier(params, "analysis_id")
+        if "document_id" in params and params["document_id"] is not None:
+            self._require_identifier(params, "document_id")
+
+        targets = params.get("targets")
+        if not isinstance(targets, list) or not targets or len(targets) > 128:
+            raise ServiceError("targets must be a non-empty bounded list")
+        shape_kind: Optional[str] = None
+        for target in targets:
+            if not isinstance(target, Mapping) or set(target) != {"object_name", "subelements"}:
+                raise ServiceError("target must contain exactly object_name and subelements")
+            object_name = target.get("object_name")
+            if (
+                not isinstance(object_name, str)
+                or not object_name.strip()
+                or len(object_name) > 256
+                or "\x00" in object_name
+            ):
+                raise ServiceError("target object_name is invalid")
+            subelements = target.get("subelements")
+            if not isinstance(subelements, list) or not subelements or len(subelements) > 64:
+                raise ServiceError("target subelements must be a non-empty bounded list")
+            for subelement in subelements:
+                if not isinstance(subelement, str) or not subelement or len(subelement) > 256:
+                    raise ServiceError("target subelement is invalid")
+                subelement_kind = next(
+                    (
+                        prefix
+                        for prefix in ("Vertex", "Edge", "Face")
+                        if (
+                            subelement.startswith(prefix)
+                            and subelement[len(prefix):].isascii()
+                            and subelement[len(prefix):].isdigit()
+                            and int(subelement[len(prefix):]) > 0
+                        )
+                    ),
+                    None,
+                )
+                if subelement_kind is None:
+                    raise ServiceError("target subelement must be Vertex, Edge, or Face")
+                if shape_kind is None:
+                    shape_kind = subelement_kind
+                elif shape_kind != subelement_kind:
+                    raise ServiceError("remote displacement targets must use one shape type")
+
+        reference_point = self._finite_vector(
+            params["reference_point_m"], "reference_point_m", strict_numeric=True
+        )
+        if any(abs(component) > 1e9 for component in reference_point):
+            raise ServiceError("reference_point_m is outside the allowed range")
+
+        data: dict[str, Any] = {
+            "references": self._references(targets, strict_targets=True),
+            "reference_point_m": reference_point,
+        }
+        constrained = False
+        for key, limit in (("translation_m", 1e9), ("rotation_rad", 1e6)):
+            if key not in params or params[key] is None:
+                continue
+            vector = self._finite_optional_vector(params[key], key, limit)
+            if any(component is not None for component in vector):
+                constrained = True
+            data[key] = vector
+        if not constrained:
+            raise ServiceError("translation_m or rotation_rad must constrain a component")
+        return data
+
     def _constraint_data(self, params: Mapping[str, Any], kind: Any, *, strict: bool) -> dict[str, Any]:
         """Build native constraint data for both the compatibility and typed routes.
 
@@ -719,6 +918,19 @@ class FEMService:
         in their handling of GUI selection, references, or vectors.
         """
         if strict:
+            if kind == "centrifugal":
+                targets = params.get("targets", [])
+                references = [] if not targets else self._references(targets, strict_targets=True)
+                axis = self._references([params["axis"]], strict_targets=True)
+                return {
+                    "references": references,
+                    "rotation_axis": axis,
+                    "rotation_frequency_hz": self._finite_value(
+                        params["rotation_frequency_hz"],
+                        "rotation_frequency_hz",
+                        strict_numeric=True,
+                    ),
+                }
             references = self._references(params.get("targets", []), strict_targets=True)
             data: dict[str, Any] = {"references": references}
             if kind == "force":

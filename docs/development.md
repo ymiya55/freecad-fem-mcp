@@ -67,7 +67,7 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 1. AddonをユーザーModディレクトリへ導入する。
 2. FreeCAD GUIを起動し、bridge-v1.jsonの生成とloopback待受を確認する。
 3. 軸力棒またはカンチレバーfixtureを開く。
-4. MCP経由でAnalysis、新Solver、材料を作り、`add_boundary_condition`と`add_load`でfixed、displacement、force、pressure、gravityを作る。remote loadの試験では`add_remote_load`で結合領域、参照点、力・モーメントを明示する。
+4. MCP経由でAnalysis、新Solver、材料を作り、`add_boundary_condition`と`add_load`でfixed、displacement、force、pressure、gravity、acceleration、centrifugalを作る。remote条件の試験では`add_remote_load`または`add_remote_displacement`で結合領域、参照点、力・モーメントまたは自由/指定成分を明示する。
 5. Gmshジョブを完了させ、ネイティブFemMeshが非空であることを確認する。
 6. 公式CalculiX事前検証を成功させる。
 7. CalculiXジョブを完了させる。
@@ -79,7 +79,7 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 
 現在のGUI縦切りリリースゲートは、Gmsh/CalculiXの正常終了、有限な結果値、非空の結果フィールド、GUI表示・画像取得、および安全性試験の全合格です。定量精度ベンチマークは、軸力棒の応力`F/A`と変位`FL/EA`に対して2.5 mmメッシュで2%以内を合格基準とします。
 
-## 検証済みベースライン（2026-08-02）
+## 検証済みベースライン（2026-08-03）
 
 - FreeCAD 1.1.3 / Python 3.11.14 / Gmsh 4.15.0 / CalculiX 2.22
 - GUI自動起動した認証bridge経由でGmshとCalculiXが完了
@@ -87,10 +87,12 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 - 変位結果のGUI表示と1280×720 PNGキャプチャに成功
 - 分類済みAPIからfixed、displacement、force、pressure、gravityをFreeCAD 1.1.3 GUI文書へ生成し、重力をグローバル`Fem::ConstraintPython`として確認
 - `add_remote_load`からglobal remote force / momentを`Fem::ConstraintRigidBody`として生成し、GUI表示とcapabilityを確認
+- `add_remote_displacement`から自由/指定成分を持つ`Fem::ConstraintRigidBody`を生成し、m→mmとaxis-angle回転を確認
+- 任意加速度をselfweight、遠心力を直線Edge軸を持つ`Fem::ConstraintPython`として生成し、FreeCAD 1.1.3 GUIで確認
 - 不正トークンによる解析変更を拒否し、FreeCADドキュメントが不変
 - 軸力棒の応力10.0 MPa（理論10.0 MPa、誤差0%）
 - 荷重端変位0.00473854 mm（理論0.00476190 mm、誤差0.4907%）
-- 21公開ツールのroute/action対応、閉じたschema、未知フィールド・偽装action・非有限値・ゼロ荷重・形状種別混在・ネストした余剰フィールド拒否を安全性試験で確認
+- 22公開ツールのroute/action対応、閉じたschema、未知フィールド・偽装action・非有限値・ゼロ荷重・形状種別混在・stale参照・ネストした余剰フィールド拒否を安全性試験で確認
 - 通常pytest（1件skip）、Ruff、repository scanner、敵対的security pytest、Bandit、pip-auditが合格
 
 ## ドキュメント

@@ -82,7 +82,8 @@ FreeCAD 1.1.3の実装で、次のネイティブ機能を確認しています�
 
 ## 一般構造解析のカバレッジ目標
 
-現在のMVPはfixed、displacement、force、pressure、selfweightを提供しています。
+現在のMVPはfixed、displacement、remote displacement、force、pressure、gravity、
+任意加速度、遠心力、remote force / momentを提供しています。
 FreeCAD 1.1.xの新solver frameworkでネイティブに生成・検証・結果importできることを条件に、
 次の範囲まで拡張します。
 
@@ -130,7 +131,7 @@ rigid body/remote条件を追加します。荷重振幅とcase識別子もこ�
 
 - **R1.1 完了:** `add_load`と`add_boundary_condition`、capability契約、既存5種のFreeCAD 1.1.3 GUI写像、旧`add_constraint`互換、安全性境界
 - **R1.2 調査完了・feature gate:** FreeCAD 1.1.3には独立した荷重座標系、集中モーメント、面traction、線・辺荷重のnative object/writerがないため未公開。任意INPでは補完しない
-- **R1.3 一部完了:** `ConstraintRigidBody`によるglobal remote force / moment。remote displacement、任意加速度、遠心力、bearing、springは継続
+- **R1.3 完了:** `ConstraintRigidBody`によるglobal remote force / moment / displacement、selfweight写像による任意加速度、`ConstraintCentrif`による遠心力を実装し、FreeCAD 1.1.3 GUIで確認。bearingとspringはCalculiX writerがないためfeature gateを維持
 - **R1.4:** boundedな荷重振幅と荷重case識別子（実行・組合せはfeature gate）
 
 ### R2: 固有振動と線形座屈

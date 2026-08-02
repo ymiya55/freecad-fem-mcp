@@ -490,6 +490,174 @@ class FreeCADOperations:
             self._add_to_analysis(analysis_obj, obj)
         return {"name": self._object_id(obj), "kind": "remote_load"}
 
+    @staticmethod
+    def _remote_displacement_vector(
+        data: Mapping[str, Any], key: str, limit: float
+    ) -> tuple[Optional[float], Optional[float], Optional[float]]:
+        """Read an optional rigid-body displacement/rotation vector.
+
+        A ``None`` component deliberately means Free; numeric zero is still a
+        constrained component and therefore must not be collapsed to ``None``.
+        """
+
+        value = data.get(key)
+        if value is None:
+            return (None, None, None)
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            raise OperationError("{} must contain exactly three components".format(key))
+        values: list[Optional[float]] = []
+        for component in value:
+            if component is None:
+                values.append(None)
+                continue
+            if isinstance(component, bool) or not isinstance(component, (int, float)):
+                raise OperationError("{} must be numeric or null".format(key))
+            number = float(component)
+            if not math.isfinite(number) or abs(number) > limit:
+                raise OperationError("{} is outside the allowed range".format(key))
+            values.append(number)
+        return (values[0], values[1], values[2])
+
+    def _remote_rotation(self, values: tuple[Optional[float], Optional[float], Optional[float]]) -> Any:
+        """Convert a rotation-vector (radians) to FreeCAD axis/angle form."""
+
+        components = tuple(0.0 if value is None else value for value in values)
+        magnitude = math.sqrt(sum(component * component for component in components))
+        rotation_cls = getattr(self.app, "Rotation", None)
+        if not callable(rotation_cls):
+            # Native FreeCAD always provides App.Rotation.  The tuple fallback
+            # keeps native-shaped fakes lightweight while preserving values.
+            return components
+        if magnitude == 0.0:
+            axis = self._vector((0.0, 0.0, 1.0))
+        else:
+            axis = self._vector(tuple(component / magnitude for component in components))
+        try:
+            return rotation_cls(axis, Radian=magnitude)
+        except TypeError:
+            try:
+                return rotation_cls(axis, magnitude)
+            except Exception as exc:
+                raise OperationError("FreeCAD Rotation could not be constructed") from exc
+        except Exception as exc:
+            raise OperationError("FreeCAD Rotation could not be constructed") from exc
+
+    def add_remote_displacement(self, analysis: str, params: Mapping[str, Any]) -> Dict[str, Any]:
+        """Create a rigid-body kinematic condition at a global reference point."""
+
+        doc = self._document()
+        analysis_obj = self._find(doc, analysis)
+        if not isinstance(params, Mapping):
+            raise OperationError("remote displacement parameters must be an object")
+        references = self._references(doc, params.get("references"))
+        self._validate_remote_references(references)
+        reference_point_m = self._remote_vector(params, "reference_point_m", 1e9, required=True)
+        translation_m = self._remote_displacement_vector(params, "translation_m", 1e9)
+        rotation_rad = self._remote_displacement_vector(params, "rotation_rad", 1e6)
+        if not any(component is not None for component in (*translation_m, *rotation_rad)):
+            raise OperationError("translation_m or rotation_rad must constrain a component")
+        name = _safe_name(params.get("name"), "RemoteDisplacement")
+
+        with self._transaction(doc, "Add remote displacement"):
+            obj = self._new_object(doc, "Fem::ConstraintRigidBody", name, "makeConstraintRigidBody")
+            try:
+                obj.References = references
+            except Exception as exc:
+                raise OperationError("remote displacement references are invalid") from exc
+            obj.ReferenceNode = self._vector(tuple(component * 1000.0 for component in reference_point_m))
+            displacement_mm = tuple(0.0 if component is None else component * 1000.0 for component in translation_m)
+            obj.Displacement = self._vector(displacement_mm)
+            obj.Rotation = self._remote_rotation(rotation_rad)
+            for axis, component in zip(("X", "Y", "Z"), translation_m):
+                setattr(obj, "TranslationalMode" + axis, "Constraint" if component is not None else "Free")
+            for axis, component in zip(("X", "Y", "Z"), rotation_rad):
+                setattr(obj, "RotationalMode" + axis, "Constraint" if component is not None else "Free")
+            self._add_to_analysis(analysis_obj, obj)
+        return {"name": self._object_id(obj), "kind": "remote_displacement"}
+
+    @classmethod
+    def _validate_centrifugal_axis(cls, references: list[tuple[Any, str]]) -> None:
+        if len(references) != 1:
+            raise OperationError("centrifugal rotation axis must contain exactly one edge")
+        obj, subelement = references[0]
+        shape = getattr(obj, "Shape", None)
+        getter = getattr(shape, "getElement", None) if shape is not None else None
+        if not callable(getter):
+            raise OperationError("centrifugal axis Shape cannot resolve subelements")
+        shape_is_null = getattr(shape, "isNull", None)
+        if callable(shape_is_null) and shape_is_null():
+            raise OperationError("centrifugal axis Shape is null")
+        try:
+            axis = getter(subelement)
+        except Exception as exc:
+            raise OperationError("centrifugal axis subelement does not exist") from exc
+        axis_is_null = getattr(axis, "isNull", None) if axis is not None else None
+        if (
+            axis is None
+            or (callable(axis_is_null) and axis_is_null())
+            or str(getattr(axis, "ShapeType", "")) != "Edge"
+        ):
+            raise OperationError("centrifugal axis must be an Edge")
+        curve = getattr(axis, "Curve", None)
+        curve_type = getattr(curve, "TypeId", "") if curve is not None else ""
+        if str(curve_type) != "Part::GeomLine":
+            raise OperationError("centrifugal axis must be a straight line")
+
+    @classmethod
+    def _validate_centrifugal_bodies(cls, references: list[tuple[Any, str]]) -> None:
+        for obj, subelement in references:
+            if not subelement.startswith("Solid"):
+                raise OperationError("centrifugal targets must use SolidN")
+            suffix = subelement[5:]
+            if not suffix.isascii() or not suffix.isdigit() or int(suffix) <= 0:
+                raise OperationError("centrifugal target subelement is invalid")
+            shape = getattr(obj, "Shape", None)
+            solids = getattr(shape, "Solids", None) if shape is not None else None
+            try:
+                solid = solids[int(suffix) - 1]
+            except Exception as exc:
+                raise OperationError("centrifugal target solid does not exist") from exc
+            solid_is_null = getattr(solid, "isNull", None) if solid is not None else None
+            if (
+                solid is None
+                or (callable(solid_is_null) and solid_is_null())
+                or str(getattr(solid, "ShapeType", "")) != "Solid"
+            ):
+                raise OperationError("centrifugal target is not a Solid")
+
+    def add_centrifugal_load(self, analysis: str, params: Mapping[str, Any]) -> Dict[str, Any]:
+        """Create FreeCAD's scripted centrifugal body-load object."""
+
+        doc = self._document()
+        analysis_obj = self._find(doc, analysis)
+        if not isinstance(params, Mapping):
+            raise OperationError("centrifugal load parameters must be an object")
+        raw_references = params.get("references", [])
+        references = [] if raw_references == [] else self._references(doc, raw_references)
+        self._validate_centrifugal_bodies(references)
+        axis_references = self._references(doc, params.get("rotation_axis"))
+        self._validate_centrifugal_axis(axis_references)
+        raw_frequency = params.get("rotation_frequency_hz")
+        if isinstance(raw_frequency, bool) or not isinstance(raw_frequency, (int, float)):
+            raise OperationError("rotation_frequency_hz must be numeric")
+        frequency = _finite_number(raw_frequency, "rotation_frequency_hz")
+        if frequency <= 0.0 or frequency > 1e9:
+            raise OperationError("rotation_frequency_hz is outside the allowed range")
+        name = _safe_name(params.get("name"), "CentrifugalLoad")
+
+        with self._transaction(doc, "Add centrifugal load"):
+            obj = self._new_object(doc, "Fem::ConstraintPython", name, "makeConstraintCentrif")
+            try:
+                obj.References = references
+                obj.RotationAxis = axis_references
+                obj.RotationFrequency = self._unit_value(
+                    frequency, "Hz", "rotation_frequency_hz"
+                )
+            except Exception as exc:
+                raise OperationError("centrifugal native properties are unavailable") from exc
+            self._add_to_analysis(analysis_obj, obj)
+        return {"name": self._object_id(obj), "kind": "centrifugal"}
+
     def create_mesh(self, analysis: str, name: str = "GmshMesh", **settings: Any) -> Dict[str, Any]:
         doc = self._document()
         analysis_obj = self._find(doc, analysis)

@@ -93,6 +93,13 @@ RemoteReferenceVector3 = Annotated[
     list[RemoteReferenceComponent], Field(min_length=3, max_length=3)
 ]
 RemoteLoadVector3 = Annotated[list[RemoteLoadComponent], Field(min_length=3, max_length=3)]
+RemoteDisplacementComponent = Annotated[FiniteFloat, Field(ge=-1e9, le=1e9)] | None
+RemoteRotationComponent = Annotated[FiniteFloat, Field(ge=-1e6, le=1e6)] | None
+RemoteDisplacementVector3 = Annotated[
+    list[RemoteDisplacementComponent], Field(min_length=3, max_length=3)
+]
+RemoteRotationVector3 = Annotated[list[RemoteRotationComponent], Field(min_length=3, max_length=3)]
+CentrifugalFrequencyHz = Annotated[StrictFloat, Field(gt=0, le=1e9), AfterValidator(_finite)]
 BoundedInt = Annotated[StrictInt, Field(ge=0, le=2_147_483_647)]
 
 
@@ -344,7 +351,7 @@ class AddLoadRequest(StrictModel):
 
     document_id: BoundedText | None = None
     analysis_id: BoundedText
-    load_type: Literal["force", "pressure", "gravity"]
+    load_type: Literal["force", "pressure", "gravity", "acceleration", "centrifugal"]
     targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
         default_factory=list,
         description=(
@@ -363,7 +370,22 @@ class AddLoadRequest(StrictModel):
     acceleration_m_s2: Vector3 | None = Field(
         default=None,
         description=(
-            "Three acceleration components in m/s^2; required only for load_type='gravity'."
+            "Three global acceleration components in m/s^2; required only for "
+            "load_type='gravity' or 'acceleration'."
+        ),
+    )
+    rotation_frequency_hz: CentrifugalFrequencyHz | None = Field(
+        default=None,
+        description=(
+            "Positive centrifugal rotation frequency in cycles per second; required "
+            "only for load_type='centrifugal'."
+        ),
+    )
+    axis: EntityRef | None = Field(
+        default=None,
+        description=(
+            "Exactly one axis reference for load_type='centrifugal'; it must contain "
+            "one EdgeN subelement."
         ),
     )
 
@@ -372,20 +394,65 @@ class AddLoadRequest(StrictModel):
         if self.load_type == "force":
             if self.force_n is None:
                 raise ValueError("force_n is required for load_type='force'")
-            if self.pressure_pa is not None or self.acceleration_m_s2 is not None:
-                raise ValueError("pressure_pa and acceleration_m_s2 are not valid for force")
+            if (
+                self.pressure_pa is not None
+                or self.acceleration_m_s2 is not None
+                or self.rotation_frequency_hz is not None
+                or self.axis is not None
+            ):
+                raise ValueError(
+                    "pressure_pa, acceleration_m_s2, rotation_frequency_hz, and axis "
+                    "are not valid for force"
+                )
         elif self.load_type == "pressure":
             if self.pressure_pa is None:
                 raise ValueError("pressure_pa is required for load_type='pressure'")
-            if self.force_n is not None or self.acceleration_m_s2 is not None:
-                raise ValueError("force_n and acceleration_m_s2 are not valid for pressure")
-        else:
+            if (
+                self.force_n is not None
+                or self.acceleration_m_s2 is not None
+                or self.rotation_frequency_hz is not None
+                or self.axis is not None
+            ):
+                raise ValueError(
+                    "force_n, acceleration_m_s2, rotation_frequency_hz, and axis "
+                    "are not valid for pressure"
+                )
+        elif self.load_type in {"gravity", "acceleration"}:
             if self.acceleration_m_s2 is None:
-                raise ValueError("acceleration_m_s2 is required for load_type='gravity'")
+                raise ValueError(
+                    "acceleration_m_s2 is required for load_type='{}'".format(self.load_type)
+                )
             if math.hypot(*self.acceleration_m_s2) <= 0.0:
                 raise ValueError("acceleration_m_s2 must have non-zero magnitude")
-            if self.force_n is not None or self.pressure_pa is not None:
-                raise ValueError("force_n and pressure_pa are not valid for gravity")
+            if (
+                self.force_n is not None
+                or self.pressure_pa is not None
+                or self.rotation_frequency_hz is not None
+                or self.axis is not None
+            ):
+                raise ValueError(
+                    "force_n, pressure_pa, rotation_frequency_hz, and axis are not "
+                    "valid for {}".format(self.load_type)
+                )
+        else:
+            if self.rotation_frequency_hz is None:
+                raise ValueError("rotation_frequency_hz is required for load_type='centrifugal'")
+            if self.axis is None:
+                raise ValueError("axis is required for load_type='centrifugal'")
+            if len(self.axis.subelements) != 1:
+                raise ValueError("axis must contain exactly one EdgeN subelement")
+            subelement = self.axis.subelements[0]
+            suffix = subelement[4:] if subelement.startswith("Edge") else ""
+            if not suffix or not suffix.isascii() or not suffix.isdigit() or int(suffix) <= 0:
+                raise ValueError("axis must contain exactly one EdgeN subelement")
+            if (
+                self.force_n is not None
+                or self.pressure_pa is not None
+                or self.acceleration_m_s2 is not None
+            ):
+                raise ValueError(
+                    "force_n, pressure_pa, and acceleration_m_s2 are not valid for centrifugal"
+                )
         return self
 
 
@@ -445,6 +512,78 @@ class AddRemoteLoadRequest(StrictModel):
         )
         if not force_nonzero and not moment_nonzero:
             raise ValueError("force_n or moment_n_m must contain a non-zero component")
+        return self
+
+
+class AddRemoteDisplacementRequest(StrictModel):
+    """Add a global rigid-body displacement/rotation at a reference point."""
+
+    document_id: BoundedText | None = None
+    analysis_id: BoundedText
+    targets: Annotated[list[EntityRef], Field(min_length=1, max_length=MAX_LIST)] = Field(
+        description=(
+            "At least one coupled-region entity reference; each item must contain "
+            "object_name and subelements."
+        ),
+    )
+    reference_point_m: RemoteReferenceVector3 = Field(
+        description=(
+            "Global reference-point coordinates in meters; each component must be "
+            "between -1e9 and 1e9."
+        ),
+    )
+    translation_m: RemoteDisplacementVector3 | None = Field(
+        default=None,
+        description=(
+            "Global translation in meters. Each of the three components is either "
+            "a finite constrained value (including zero) or null for Free; each "
+            "numeric component is bounded to ±1e9 m."
+        ),
+    )
+    rotation_rad: RemoteRotationVector3 | None = Field(
+        default=None,
+        description=(
+            "Global rotation vector in radians. Each of the three components is "
+            "either a finite constrained value (including zero) or null for Free; "
+            "each numeric component is bounded to ±1e6 rad."
+        ),
+    )
+
+    @field_validator("reference_point_m")
+    @classmethod
+    def validate_reference_point(cls, value: list[float]) -> list[float]:
+        if any(abs(component) > 1e9 for component in value):
+            raise ValueError("reference_point_m components must be within ±1e9 m")
+        return value
+
+    @field_validator("translation_m")
+    @classmethod
+    def validate_translation(cls, value: list[float | None] | None) -> list[float | None] | None:
+        if value is not None and any(
+            component is not None and abs(component) > 1e9 for component in value
+        ):
+            raise ValueError("translation_m components must be within ±1e9 m")
+        return value
+
+    @field_validator("rotation_rad")
+    @classmethod
+    def validate_rotation(cls, value: list[float | None] | None) -> list[float | None] | None:
+        if value is not None and any(
+            component is not None and abs(component) > 1e6 for component in value
+        ):
+            raise ValueError("rotation_rad components must be within ±1e6 rad")
+        return value
+
+    @model_validator(mode="after")
+    def require_constrained_component(self) -> "AddRemoteDisplacementRequest":
+        constrained = any(
+            component is not None
+            for vector in (self.translation_m, self.rotation_rad)
+            if vector is not None
+            for component in vector
+        )
+        if not constrained:
+            raise ValueError("translation_m or rotation_rad must constrain a component")
         return self
 
 
@@ -547,6 +686,7 @@ REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "constraint": ConstraintRequest,
     "load": AddLoadRequest,
     "remote_load": AddRemoteLoadRequest,
+    "remote_displacement": AddRemoteDisplacementRequest,
     "boundary_condition": AddBoundaryConditionRequest,
     "mesh": MeshRequest,
     "validate": ValidateRequest,
@@ -567,6 +707,7 @@ PUBLIC_REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "add_constraint": AddConstraintRequest,
     "add_load": AddLoadRequest,
     "add_remote_load": AddRemoteLoadRequest,
+    "add_remote_displacement": AddRemoteDisplacementRequest,
     "add_boundary_condition": AddBoundaryConditionRequest,
     "create_mesh": CreateMeshRequest,
     "validate_analysis": ValidateAnalysisRequest,
@@ -607,6 +748,7 @@ AssignMaterialInput = AssignMaterialParams = AssignMaterialRequest
 AddConstraintInput = AddConstraintParams = AddConstraintRequest
 AddLoadInput = AddLoadParams = AddLoadRequest
 AddRemoteLoadInput = AddRemoteLoadParams = AddRemoteLoadRequest
+AddRemoteDisplacementInput = AddRemoteDisplacementParams = AddRemoteDisplacementRequest
 AddBoundaryConditionInput = AddBoundaryConditionParams = AddBoundaryConditionRequest
 CreateMeshInput = CreateMeshParams = CreateMeshRequest
 ValidateAnalysisInput = ValidateAnalysisParams = ValidateAnalysisRequest
@@ -658,6 +800,9 @@ __all__ = [
     "AddRemoteLoadRequest",
     "AddRemoteLoadInput",
     "AddRemoteLoadParams",
+    "AddRemoteDisplacementRequest",
+    "AddRemoteDisplacementInput",
+    "AddRemoteDisplacementParams",
     "AddBoundaryConditionRequest",
     "AddBoundaryConditionInput",
     "AddBoundaryConditionParams",

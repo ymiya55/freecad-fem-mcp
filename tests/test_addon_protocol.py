@@ -27,6 +27,7 @@ def test_allowlist_and_nested_auth_shape() -> None:
     assert parse_request_line(json.dumps({"id": 2, "method": "load", "params": {}})).method == "load"
     assert parse_request_line(json.dumps({"id": 3, "method": "boundary_condition", "params": {}})).method == "boundary_condition"
     assert parse_request_line(json.dumps({"id": 4, "method": "remote_load", "params": {}})).method == "remote_load"
+    assert parse_request_line(json.dumps({"id": 5, "method": "remote_displacement", "params": {}})).method == "remote_displacement"
     with pytest.raises(ProtocolError):
         parse_request_line('{"id":1,"method":"ping","params":{}}')
     with pytest.raises(ProtocolError):
@@ -250,6 +251,77 @@ def test_typed_load_and_boundary_routes_use_native_constraint_kinds() -> None:
     assert operations.calls[-1][2]["xFree"] is False
     assert operations.calls[-1][2]["y"] == 0.001
 
+    acceleration = service(Request(4, "load", {
+        "action": "add", "analysis_id": "Analysis", "load_type": "acceleration",
+        "targets": target, "acceleration_m_s2": [0.0, -9.81, 0.0],
+    }))
+    assert acceleration["load_id"] == "Native_selfweight"
+    assert operations.calls[-1][:2] == ("Analysis", "selfweight")
+    assert operations.calls[-1][2]["gravity_acceleration"] == 9.81
+
+
+def test_remote_displacement_and_centrifugal_routes_are_strict() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        def __init__(self):
+            self.remote = []
+            self.centrif = []
+
+        def add_remote_displacement(self, analysis, params):
+            self.remote.append((analysis, params))
+            return {"name": "Native_RemoteDisplacement"}
+
+        def add_centrifugal_load(self, analysis, params):
+            self.centrif.append((analysis, params))
+            return {"name": "Native_Centrifugal"}
+
+    operations = _Operations()
+    service = FEMService(operations=operations, selection=_Selection())
+    targets = [{"object_name": "Beam", "subelements": ["Face1"]}]
+    displacement = service(Request(40, "remote_displacement", {
+        "action": "add", "analysis_id": "Analysis", "targets": targets,
+        "reference_point_m": [1.0, 2.0, 3.0],
+        "translation_m": [0.0, None, 0.1],
+        "rotation_rad": [None, None, None],
+    }))
+    assert displacement["remote_displacement_id"] == "Native_RemoteDisplacement"
+    assert operations.remote[-1][1]["translation_m"] == [0.0, None, 0.1]
+
+    centrifugal = service(Request(41, "load", {
+        "action": "add", "analysis_id": "Analysis", "load_type": "centrifugal",
+        "axis": {"object_name": "Axis", "subelements": ["Edge1"]},
+        "targets": [{"object_name": "Rotor", "subelements": ["Solid1"]}],
+        "rotation_frequency_hz": 50.0,
+    }))
+    assert centrifugal["load_id"] == "Native_Centrifugal"
+    assert operations.centrif[-1][1] == {
+        "references": [{"object": "Rotor", "sub_element": "Solid1"}],
+        "rotation_axis": [{"object": "Axis", "sub_element": "Edge1"}],
+        "rotation_frequency_hz": 50.0,
+    }
+
+    invalid = {
+        "action": "add", "analysis_id": "Analysis", "targets": targets,
+        "reference_point_m": [0.0, 0.0, 0.0], "translation_m": [None, None, None],
+    }
+    for bad in (
+        {"translation_m": [0.0, None]},
+        {"rotation_rad": [None, None, 1e6 + 1.0]},
+        {"native_property": "Displacement"},
+    ):
+        params = dict(invalid)
+        params.update(bad)
+        with pytest.raises(ServiceError):
+            service(Request(42, "remote_displacement", params))
+
 
 def test_remote_load_route_validates_targets_and_vectors() -> None:
     class _Selection:
@@ -411,6 +483,12 @@ def test_all_public_routes_reject_unknown_direct_bridge_fields() -> None:
             "action": "add", "analysis_id": "Analysis",
             "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
             "reference_point_m": [0.0, 0.0, 0.0], "force_n": [1.0, 0.0, 0.0],
+        }),
+        ("remote_displacement", {
+            "action": "add", "analysis_id": "Analysis",
+            "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
+            "reference_point_m": [0.0, 0.0, 0.0],
+            "translation_m": [0.0, None, None],
         }),
         ("mesh", {"action": "create", "analysis_id": "Analysis"}),
         ("validate", {"action": "validate", "analysis_id": "Analysis"}),

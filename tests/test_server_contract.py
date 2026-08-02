@@ -30,6 +30,7 @@ def test_fixed_tool_surface_has_no_generic_escape_hatches() -> None:
         "add_constraint",
         "add_load",
         "add_remote_load",
+        "add_remote_displacement",
         "add_boundary_condition",
         "create_mesh",
         "validate_analysis",
@@ -110,6 +111,18 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
             force_n=[10.0, 0.0, 0.0],
         )
     )
+    remote_displacement_fn = getattr(
+        tools["add_remote_displacement"], "fn", tools["add_remote_displacement"]
+    )
+    asyncio.run(
+        remote_displacement_fn(
+            analysis_id="Analysis",
+            targets=[{"object_name": "Cantilever", "subelements": ["Face1"]}],
+            reference_point_m=[0.0, 0.0, 0.0],
+            translation_m=[0.0, None, None],
+            rotation_rad=[None, None, None],
+        )
+    )
     boundary_fn = getattr(tools["add_boundary_condition"], "fn", tools["add_boundary_condition"])
     asyncio.run(
         boundary_fn(
@@ -128,9 +141,13 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
     assert client.calls[1][1]["action"] == "add"
     assert client.calls[1][1]["reference_point_m"] == [0.0, 0.0, 0.0]
     assert client.calls[1][1]["force_n"] == [10.0, 0.0, 0.0]
-    assert client.calls[2][0] == "boundary_condition"
+    assert PUBLIC_TOOL_ACTIONS["add_remote_displacement"] == ("remote_displacement", "add")
+    assert client.calls[2][0] == "remote_displacement"
     assert client.calls[2][1]["action"] == "add"
-    assert client.calls[2][1]["boundary_type"] == "displacement"
+    assert client.calls[2][1]["translation_m"] == [0.0, None, None]
+    assert client.calls[3][0] == "boundary_condition"
+    assert client.calls[3][1]["action"] == "add"
+    assert client.calls[3][1]["boundary_type"] == "displacement"
 
     with pytest.raises(ValidationError):
         asyncio.run(
@@ -146,6 +163,12 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
     acceleration_schema = load_schema["properties"]["acceleration_m_s2"]["anyOf"][0]
     assert acceleration_schema["maxItems"] == 3
     assert acceleration_schema["minItems"] == 3
+    assert "centrifugal" in load_schema["properties"]["load_type"]["enum"]
+    frequency_schema = load_schema["properties"]["rotation_frequency_hz"]["anyOf"][0]
+    assert frequency_schema["exclusiveMinimum"] == 0
+    assert frequency_schema["maximum"] == 1e9
+    axis_schema = load_schema["properties"]["axis"]["anyOf"][0]
+    assert "EntityRef" in axis_schema["$ref"]
 
     remote_schema = getattr(tools["add_remote_load"], "parameters", {})
     assert remote_schema["additionalProperties"] is False
@@ -156,6 +179,17 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
     assert force_schema["items"]["le"] == 1e15
     assert "coordinate_system" not in remote_schema["properties"]
 
+    remote_displacement_schema = getattr(tools["add_remote_displacement"], "parameters", {})
+    assert remote_displacement_schema["additionalProperties"] is False
+    assert remote_displacement_schema["properties"]["targets"]["minItems"] == 1
+    translation_schema = remote_displacement_schema["properties"]["translation_m"]["anyOf"][0]
+    assert translation_schema["minItems"] == 3
+    assert translation_schema["items"]["anyOf"][0]["le"] == 1e9
+    rotation_schema = remote_displacement_schema["properties"]["rotation_rad"]["anyOf"][0]
+    assert rotation_schema["items"]["anyOf"][0]["le"] == 1e6
+    assert "force_n" not in remote_displacement_schema["properties"]
+    assert "coordinate_system" not in remote_displacement_schema["properties"]
+
     with pytest.raises(ValidationError):
         asyncio.run(
             remote_fn(
@@ -164,5 +198,16 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
                 reference_point_m=[0.0, 0.0, 0.0],
                 force_n=[0.0, 0.0, 0.0],
                 moment_n_m=[0.0, 0.0, 0.0],
+            )
+        )
+
+    with pytest.raises(ValidationError):
+        asyncio.run(
+            remote_displacement_fn(
+                analysis_id="Analysis",
+                targets=[{"object_name": "Cantilever", "subelements": ["Face1"]}],
+                reference_point_m=[0.0, 0.0, 0.0],
+                translation_m=[None, None, None],
+                rotation_rad=[None, None, None],
             )
         )

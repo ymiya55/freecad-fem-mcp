@@ -36,12 +36,14 @@ from .models import (
     AddBoundaryConditionRequest,
     AddConstraintRequest,
     AddLoadRequest,
+    AddRemoteDisplacementRequest,
     AddRemoteLoadRequest,
     AssignMaterialRequest,
     BoundedPath,
     BoundedText,
     CancelJobRequest,
     CaptureGuiRequest,
+    CentrifugalFrequencyHz,
     CreateAnalysisRequest,
     CreateMeshRequest,
     EntityRef,
@@ -56,7 +58,9 @@ from .models import (
     OpenModelRequest,
     PositiveFiniteFloat,
     RemoteLoadVector3,
+    RemoteDisplacementVector3,
     RemoteReferenceVector3,
+    RemoteRotationVector3,
     SaveDocumentRequest,
     SetViewRequest,
     ShowResultRequest,
@@ -79,6 +83,7 @@ TOOL_NAMES = (
     "add_constraint",
     "add_load",
     "add_remote_load",
+    "add_remote_displacement",
     "add_boundary_condition",
     "create_mesh",
     "validate_analysis",
@@ -103,6 +108,7 @@ PUBLIC_TOOL_ACTIONS = {
     "add_constraint": ("constraint", "add"),
     "add_load": ("load", "add"),
     "add_remote_load": ("remote_load", "add"),
+    "add_remote_displacement": ("remote_displacement", "add"),
     "add_boundary_condition": ("boundary_condition", "add"),
     "create_mesh": ("mesh", "create"),
     "validate_analysis": ("validate", "validate"),
@@ -424,14 +430,16 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         name="add_load",
         description=(
             "Add a typed SI load. Use force_n for force, pressure_pa for pressure, "
-            "or exactly three acceleration_m_s2 components for gravity; targets "
-            "may be empty to use the current GUI selection."
+            "exactly three acceleration_m_s2 components for gravity or arbitrary "
+            "acceleration, or rotation_frequency_hz plus one EdgeN axis reference "
+            "for centrifugal load. Targets may be empty to use the current GUI "
+            "selection (or all elements for centrifugal load)."
         ),
         annotations=ann(readonly=False, destructive=False),
     )
     async def add_load(
         analysis_id: BoundedText,
-        load_type: Literal["force", "pressure", "gravity"],
+        load_type: Literal["force", "pressure", "gravity", "acceleration", "centrifugal"],
         document_id: BoundedText | None = None,
         targets: Annotated[
             list[EntityRef],
@@ -447,6 +455,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         force_n: FiniteFloat | None = None,
         pressure_pa: FiniteFloat | None = None,
         acceleration_m_s2: Vector3 | None = None,
+        rotation_frequency_hz: CentrifugalFrequencyHz | None = None,
+        axis: EntityRef | None = None,
     ) -> Any:
         request = AddLoadRequest(
             analysis_id=analysis_id,
@@ -456,6 +466,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             force_n=force_n,
             pressure_pa=pressure_pa,
             acceleration_m_s2=acceleration_m_s2,
+            rotation_frequency_hz=rotation_frequency_hz,
+            axis=axis,
         )
         return await invoke("load", "add", request)
 
@@ -496,6 +508,45 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             moment_n_m=moment_n_m,
         )
         return await invoke("remote_load", "add", request)
+
+    @app.tool(
+        name="add_remote_displacement",
+        description=(
+            "Add a remote global displacement and/or rotation at a reference point. "
+            "Targets must identify at least one coupled region; reference_point_m "
+            "is in global meters, translation_m in global meters, and rotation_rad "
+            "in global radians. Each numeric component constrains that DOF (including "
+            "zero); null means Free. At least one component must be numeric."
+        ),
+        annotations=ann(readonly=False, destructive=False),
+    )
+    async def add_remote_displacement(
+        analysis_id: BoundedText,
+        targets: Annotated[
+            list[EntityRef],
+            Field(
+                min_length=1,
+                max_length=128,
+                description=(
+                    "At least one coupled-region entity reference; each item must "
+                    "contain object_name and subelements."
+                ),
+            ),
+        ],
+        reference_point_m: RemoteReferenceVector3,
+        document_id: BoundedText | None = None,
+        translation_m: RemoteDisplacementVector3 | None = None,
+        rotation_rad: RemoteRotationVector3 | None = None,
+    ) -> Any:
+        request = AddRemoteDisplacementRequest(
+            analysis_id=analysis_id,
+            targets=targets,
+            reference_point_m=reference_point_m,
+            document_id=document_id,
+            translation_m=translation_m,
+            rotation_rad=rotation_rad,
+        )
+        return await invoke("remote_displacement", "add", request)
 
     @app.tool(
         name="add_boundary_condition",

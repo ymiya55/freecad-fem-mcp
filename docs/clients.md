@@ -102,6 +102,11 @@ Pocket002のFace1を結合領域として、global参照点[0.1, 0.2, 0.3] mに
 force [100, 0, -50] Nとmoment [0, 25, 0] N·mを与えるremote loadを追加して。
 ```
 
+remote displacementは`add_remote_displacement`を使います。`translation_m`と
+`rotation_rad`の各成分は、数値なら指定値、`null`なら自由です。少なくとも1成分を
+指定する必要があります。遠心力は`add_load`の`centrifugal`を使い、周波数はHz、
+軸は実在する直線`EdgeN`を1本、対象は`SolidN`または全要素を表す空配列で指定します。
+
 拘束対象を明示的に呼ぶ場合、`targets`の要素は次の形です。`object_id`ではなく`object_name`を使用します。
 
 ```json
