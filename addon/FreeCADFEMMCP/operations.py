@@ -358,6 +358,138 @@ class FreeCADOperations:
             self._add_to_analysis(analysis_obj, obj)
         return {"name": self._object_id(obj), "kind": kind}
 
+    @staticmethod
+    def _remote_subshape_kind(subelement: str) -> Optional[str]:
+        """Return the declared TopoShape kind for a ``Face1``-style name."""
+
+        for prefix in ("Vertex", "Edge", "Face"):
+            suffix = subelement[len(prefix):] if subelement.startswith(prefix) else ""
+            if suffix and suffix.isascii() and suffix.isdigit() and int(suffix) > 0:
+                return prefix
+        return None
+
+    @classmethod
+    def _validate_remote_references(cls, references: list[tuple[Any, str]]) -> None:
+        """Resolve every remote target against its native TopoShape.
+
+        ``Fem::ConstraintRigidBody`` accepts only actual vertex, edge, or face
+        references.  Checking through ``Shape.getElement`` before object
+        creation rejects stale/forged names and prevents a mixed-shape rigid
+        body that the GUI would not permit.
+        """
+
+        shape_kind: Optional[str] = None
+        for obj, subelement in references:
+            shape = getattr(obj, "Shape", None)
+            if shape is None:
+                raise OperationError("remote load target has no Shape")
+            is_null = getattr(shape, "isNull", None)
+            try:
+                if (callable(is_null) and is_null()) or (isinstance(is_null, bool) and is_null):
+                    raise OperationError("remote load target Shape is null")
+            except OperationError:
+                raise
+            except Exception as exc:
+                raise OperationError("remote load target Shape is invalid") from exc
+
+            declared_kind = cls._remote_subshape_kind(subelement)
+            if declared_kind is None:
+                raise OperationError("remote load subelement is invalid")
+            getter = getattr(shape, "getElement", None)
+            if not callable(getter):
+                raise OperationError("remote load target Shape cannot resolve subelements")
+            try:
+                element = getter(subelement)
+            except Exception as exc:
+                raise OperationError("remote load subelement does not exist") from exc
+            if element is None:
+                raise OperationError("remote load subelement does not exist")
+            element_is_null = getattr(element, "isNull", None)
+            try:
+                if (callable(element_is_null) and element_is_null()) or (
+                    isinstance(element_is_null, bool) and element_is_null
+                ):
+                    raise OperationError("remote load subelement does not exist")
+            except OperationError:
+                raise
+            except Exception as exc:
+                raise OperationError("remote load subelement is invalid") from exc
+            actual_kind = getattr(element, "ShapeType", None)
+            if callable(actual_kind):
+                actual_kind = actual_kind()
+            if str(actual_kind) != declared_kind:
+                raise OperationError("remote load subelement type does not match its name")
+            if shape_kind is None:
+                shape_kind = declared_kind
+            elif shape_kind != declared_kind:
+                raise OperationError("remote load targets must use one shape type")
+
+    @staticmethod
+    def _remote_vector(
+        data: Mapping[str, Any], key: str, limit: float, *, required: bool = False
+    ) -> tuple[float, float, float]:
+        """Read one strict, bounded SI vector for a rigid-body remote load."""
+
+        value = data.get(key)
+        if value is None:
+            if required:
+                raise OperationError("{} is required".format(key))
+            return (0.0, 0.0, 0.0)
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            raise OperationError("{} must contain exactly three components".format(key))
+        values: list[float] = []
+        for component in value:
+            if isinstance(component, bool) or not isinstance(component, (int, float)):
+                raise OperationError("{} must be numeric".format(key))
+            number = float(component)
+            if not math.isfinite(number) or abs(number) > limit:
+                raise OperationError("{} is outside the allowed range".format(key))
+            values.append(number)
+        return (values[0], values[1], values[2])
+
+    def add_remote_load(self, analysis: str, params: Mapping[str, Any]) -> Dict[str, Any]:
+        """Create a native ``Fem::ConstraintRigidBody`` remote load.
+
+        The public service supplies global SI vectors.  FreeCAD's native FEM
+        object stores the reference node in millimetres and accepts force and
+        moment values as unit-bearing quantities, so conversion is kept here at
+        the native operation boundary.
+        """
+
+        doc = self._document()
+        analysis_obj = self._find(doc, analysis)
+        if not isinstance(params, Mapping):
+            raise OperationError("remote load parameters must be an object")
+        raw_references = params.get("references")
+        references = self._references(doc, raw_references)
+        self._validate_remote_references(references)
+        reference_point_m = self._remote_vector(params, "reference_point_m", 1e9, required=True)
+        force_n = self._remote_vector(params, "force_n", 1e15)
+        moment_n_m = self._remote_vector(params, "moment_n_m", 1e15)
+        if not any(component != 0.0 for component in (*force_n, *moment_n_m)):
+            raise OperationError("force_n or moment_n_m must contain a non-zero component")
+        name = _safe_name(params.get("name"), "RemoteLoad")
+
+        with self._transaction(doc, "Add remote load"):
+            obj = self._new_object(doc, "Fem::ConstraintRigidBody", name, "makeConstraintRigidBody")
+            try:
+                obj.References = references
+            except Exception as exc:
+                raise OperationError("remote load references are invalid") from exc
+            # FreeCAD's PropertyPosition uses the document's native length
+            # unit (millimetres), while the public API is explicitly metres.
+            obj.ReferenceNode = self._vector(tuple(component * 1000.0 for component in reference_point_m))
+
+            force_axes = ("X", "Y", "Z")
+            for axis, component in zip(force_axes, force_n):
+                setattr(obj, "Force" + axis, self._unit_value(component, "N", "force_n"))
+                setattr(obj, "TranslationalMode" + axis, "Load" if component != 0.0 else "Free")
+            for axis, component in zip(force_axes, moment_n_m):
+                setattr(obj, "Moment" + axis, self._unit_value(component, "N*m", "moment_n_m"))
+                setattr(obj, "RotationalMode" + axis, "Load" if component != 0.0 else "Free")
+            self._add_to_analysis(analysis_obj, obj)
+        return {"name": self._object_id(obj), "kind": "remote_load"}
+
     def create_mesh(self, analysis: str, name: str = "GmshMesh", **settings: Any) -> Dict[str, Any]:
         doc = self._document()
         analysis_obj = self._find(doc, analysis)

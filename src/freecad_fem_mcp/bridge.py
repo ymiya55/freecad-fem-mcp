@@ -36,6 +36,7 @@ BRIDGE_METHODS = frozenset(
         "material",
         "constraint",
         "load",
+        "remote_load",
         "boundary_condition",
         "mesh",
         "validate",

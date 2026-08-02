@@ -26,6 +26,7 @@ def test_allowlist_and_nested_auth_shape() -> None:
     assert request.token == "x"
     assert parse_request_line(json.dumps({"id": 2, "method": "load", "params": {}})).method == "load"
     assert parse_request_line(json.dumps({"id": 3, "method": "boundary_condition", "params": {}})).method == "boundary_condition"
+    assert parse_request_line(json.dumps({"id": 4, "method": "remote_load", "params": {}})).method == "remote_load"
     with pytest.raises(ProtocolError):
         parse_request_line('{"id":1,"method":"ping","params":{}}')
     with pytest.raises(ProtocolError):
@@ -250,6 +251,73 @@ def test_typed_load_and_boundary_routes_use_native_constraint_kinds() -> None:
     assert operations.calls[-1][2]["y"] == 0.001
 
 
+def test_remote_load_route_validates_targets_and_vectors() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        def __init__(self):
+            self.calls = []
+
+        def add_remote_load(self, analysis, params):
+            self.calls.append((analysis, params))
+            return {"name": "Native_RemoteLoad"}
+
+    operations = _Operations()
+    service = FEMService(operations=operations, selection=_Selection())
+    target = [{"object_name": "Beam", "subelements": ["Face1", "Face2"]}]
+    result = service(Request(30, "remote_load", {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "targets": target,
+        "reference_point_m": [1.0, 2.0, 3.0],
+        "force_n": [100.0, 0.0, 0.0],
+        "moment_n_m": [0.0, 0.0, 25.0],
+    }))
+    assert result["remote_load_id"] == "Native_RemoteLoad"
+    assert operations.calls[-1] == (
+        "Analysis",
+        {
+            "references": [
+                {"object": "Beam", "sub_element": "Face1"},
+                {"object": "Beam", "sub_element": "Face2"},
+            ],
+            "reference_point_m": [1.0, 2.0, 3.0],
+            "force_n": [100.0, 0.0, 0.0],
+            "moment_n_m": [0.0, 0.0, 25.0],
+        },
+    )
+
+    invalid = {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "targets": target,
+        "reference_point_m": [0.0, 0.0, 0.0],
+        "force_n": [1.0, 0.0, 0.0],
+    }
+    for bad in (
+        {"targets": []},
+        {"targets": [{"object_name": "Beam", "subelements": []}]},
+        {"targets": [{"object_name": "Beam", "subelements": ["Face1", "Edge1"]}]},
+        {"targets": [{"object_name": "Beam", "subelements": ["Cell1"]}]},
+        {"force_n": [0.0, 0.0, 0.0]},
+        {"reference_point_m": [1e9 + 1.0, 0.0, 0.0]},
+        {"force_n": [1e15 + 1.0, 0.0, 0.0]},
+        {"force_n": [float("nan"), 0.0, 0.0]},
+        {"native_property": "ForceX"},
+    ):
+        params = dict(invalid)
+        params.update(bad)
+        with pytest.raises(ServiceError):
+            service(Request(31, "remote_load", params))
+
+
 def test_typed_routes_reject_wrong_values_and_extra_fields() -> None:
     class _Selection:
         gui = None
@@ -339,6 +407,11 @@ def test_all_public_routes_reject_unknown_direct_bridge_fields() -> None:
         ("constraint", {"action": "add", "analysis_id": "Analysis", "constraint_type": "fixed"}),
         ("load", {"action": "add", "analysis_id": "Analysis", "load_type": "force", "force_n": 1.0}),
         ("boundary_condition", {"action": "add", "analysis_id": "Analysis", "boundary_type": "fixed"}),
+        ("remote_load", {
+            "action": "add", "analysis_id": "Analysis",
+            "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
+            "reference_point_m": [0.0, 0.0, 0.0], "force_n": [1.0, 0.0, 0.0],
+        }),
         ("mesh", {"action": "create", "analysis_id": "Analysis"}),
         ("validate", {"action": "validate", "analysis_id": "Analysis"}),
         ("jobs", {"action": "start", "analysis_id": "Analysis"}),

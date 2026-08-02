@@ -135,6 +135,10 @@ class FEMService:
             self._action(params, "add")
             self._validate_boundary_request(params)
             return
+        if method == "remote_load":
+            self._action(params, "add")
+            self._validate_remote_load_request(params)
+            return
         if not isinstance(action, str):
             # The dispatch branch will emit the same safe unsupported-action
             # error.  Avoid attempting a dictionary lookup with an unhashable
@@ -336,7 +340,7 @@ class FEMService:
                 "version": version,
                 "capabilities": {
                     "analysis_types": ["static"],
-                    "loads": ["force", "pressure", "gravity"],
+                    "loads": ["force", "pressure", "gravity", "remote_force", "remote_moment"],
                     "boundary_conditions": ["fixed", "displacement"],
                     "connections": [],
                     "mpc_types": [],
@@ -414,6 +418,12 @@ class FEMService:
             boundary = self._constraint_data(params, boundary_type, strict=True)
             result = self.operations.add_constraint(params["analysis_id"], boundary_type, boundary)
             return {"boundary_condition_id": result["name"], **result}
+
+        if method == "remote_load":
+            self._action(params, "add")
+            remote = self._validate_remote_load_request(params)
+            result = self.operations.add_remote_load(params["analysis_id"], remote)
+            return {"remote_load_id": result["name"], **result}
 
         if method == "mesh":
             self._action(params, "create")
@@ -625,6 +635,81 @@ class FEMService:
         if boundary_type == "displacement":
             self._finite_vector(params["displacement_m"], "displacement_m", strict_numeric=True)
         return boundary_type
+
+    def _validate_remote_load_request(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate the strict global remote-force/moment request shape."""
+
+        allowed = {
+            "action", "document_id", "analysis_id", "targets", "reference_point_m",
+            "force_n", "moment_n_m",
+        }
+        self._validate_fields(
+            params,
+            allowed,
+            {"action", "analysis_id", "targets", "reference_point_m"},
+        )
+        self._require_identifier(params, "analysis_id")
+        if "document_id" in params and params["document_id"] is not None:
+            self._require_identifier(params, "document_id")
+
+        targets = params.get("targets")
+        if not isinstance(targets, list) or not targets or len(targets) > 128:
+            raise ServiceError("targets must be a non-empty bounded list")
+        shape_kind: Optional[str] = None
+        for target in targets:
+            if not isinstance(target, Mapping) or set(target) != {"object_name", "subelements"}:
+                raise ServiceError("target must contain exactly object_name and subelements")
+            object_name = target.get("object_name")
+            if (
+                not isinstance(object_name, str)
+                or not object_name.strip()
+                or len(object_name) > 256
+                or "\x00" in object_name
+            ):
+                raise ServiceError("target object_name is invalid")
+            subelements = target.get("subelements")
+            if not isinstance(subelements, list) or not subelements or len(subelements) > 64:
+                raise ServiceError("target subelements must be a non-empty bounded list")
+            for subelement in subelements:
+                if not isinstance(subelement, str) or not subelement or len(subelement) > 256:
+                    raise ServiceError("target subelement is invalid")
+                subelement_kind = next(
+                    (
+                        prefix
+                        for prefix in ("Vertex", "Edge", "Face")
+                        if subelement.startswith(prefix) and subelement[len(prefix):].isdigit()
+                    ),
+                    None,
+                )
+                if subelement_kind is None:
+                    raise ServiceError("target subelement must be Vertex, Edge, or Face")
+                if shape_kind is None:
+                    shape_kind = subelement_kind
+                elif shape_kind != subelement_kind:
+                    raise ServiceError("remote load targets must use one shape type")
+
+        reference_point = self._finite_vector(
+            params["reference_point_m"], "reference_point_m", strict_numeric=True
+        )
+        if any(abs(component) > 1e9 for component in reference_point):
+            raise ServiceError("reference_point_m is outside the allowed range")
+
+        data: dict[str, Any] = {
+            "references": self._references(targets, strict_targets=True),
+            "reference_point_m": reference_point,
+        }
+        nonzero = False
+        for key in ("force_n", "moment_n_m"):
+            if key not in params or params[key] is None:
+                continue
+            vector = self._finite_vector(params[key], key, strict_numeric=True)
+            if any(abs(component) > 1e15 for component in vector):
+                raise ServiceError("{} is outside the allowed range".format(key))
+            data[key] = vector
+            nonzero = nonzero or any(component != 0.0 for component in vector)
+        if not nonzero:
+            raise ServiceError("force_n or moment_n_m must contain a non-zero component")
+        return data
 
     def _constraint_data(self, params: Mapping[str, Any], kind: Any, *, strict: bool) -> dict[str, Any]:
         """Build native constraint data for both the compatibility and typed routes.

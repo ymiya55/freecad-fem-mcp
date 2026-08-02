@@ -87,6 +87,12 @@ BoundedList = Annotated[list[Any], Field(max_length=MAX_LIST)]
 StringList = Annotated[list[BoundedText], Field(max_length=MAX_LIST)]
 ValueList = Annotated[list[FiniteFloat], Field(max_length=MAX_VALUES)]
 Vector3 = Annotated[list[FiniteFloat], Field(min_length=3, max_length=3)]
+RemoteReferenceComponent = Annotated[FiniteFloat, Field(ge=-1e9, le=1e9)]
+RemoteLoadComponent = Annotated[FiniteFloat, Field(ge=-1e15, le=1e15)]
+RemoteReferenceVector3 = Annotated[
+    list[RemoteReferenceComponent], Field(min_length=3, max_length=3)
+]
+RemoteLoadVector3 = Annotated[list[RemoteLoadComponent], Field(min_length=3, max_length=3)]
 BoundedInt = Annotated[StrictInt, Field(ge=0, le=2_147_483_647)]
 
 
@@ -383,6 +389,65 @@ class AddLoadRequest(StrictModel):
         return self
 
 
+class AddRemoteLoadRequest(StrictModel):
+    """Add a global remote force/moment load at a bounded reference point."""
+
+    document_id: BoundedText | None = None
+    analysis_id: BoundedText
+    targets: Annotated[list[EntityRef], Field(min_length=1, max_length=MAX_LIST)] = Field(
+        description=(
+            "At least one coupled-region entity reference; each item must contain "
+            "object_name and subelements."
+        ),
+    )
+    reference_point_m: RemoteReferenceVector3 = Field(
+        description=(
+            "Global reference-point coordinates in meters; each component must be "
+            "between -1e9 and 1e9."
+        ),
+    )
+    force_n: RemoteLoadVector3 | None = Field(
+        default=None,
+        description=(
+            "Global force vector components in newtons; each component must be "
+            "between -1e15 and 1e15."
+        ),
+    )
+    moment_n_m: RemoteLoadVector3 | None = Field(
+        default=None,
+        description=(
+            "Global moment vector components in newton-meters; each component must "
+            "be between -1e15 and 1e15."
+        ),
+    )
+
+    @field_validator("reference_point_m")
+    @classmethod
+    def validate_reference_point(cls, value: list[float]) -> list[float]:
+        if any(abs(component) > 1e9 for component in value):
+            raise ValueError("reference_point_m components must be within ±1e9 m")
+        return value
+
+    @field_validator("force_n", "moment_n_m")
+    @classmethod
+    def validate_remote_vector(cls, value: list[float] | None) -> list[float] | None:
+        if value is not None and any(abs(component) > 1e15 for component in value):
+            raise ValueError("remote load components must be within ±1e15 SI units")
+        return value
+
+    @model_validator(mode="after")
+    def require_nonzero_remote_load(self) -> "AddRemoteLoadRequest":
+        force_nonzero = self.force_n is not None and any(
+            component != 0.0 for component in self.force_n
+        )
+        moment_nonzero = self.moment_n_m is not None and any(
+            component != 0.0 for component in self.moment_n_m
+        )
+        if not force_nonzero and not moment_nonzero:
+            raise ValueError("force_n or moment_n_m must contain a non-zero component")
+        return self
+
+
 class AddBoundaryConditionRequest(StrictModel):
     """Add a fixed or prescribed-displacement boundary condition."""
 
@@ -481,6 +546,7 @@ REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "material": MaterialRequest,
     "constraint": ConstraintRequest,
     "load": AddLoadRequest,
+    "remote_load": AddRemoteLoadRequest,
     "boundary_condition": AddBoundaryConditionRequest,
     "mesh": MeshRequest,
     "validate": ValidateRequest,
@@ -500,6 +566,7 @@ PUBLIC_REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "assign_material": AssignMaterialRequest,
     "add_constraint": AddConstraintRequest,
     "add_load": AddLoadRequest,
+    "add_remote_load": AddRemoteLoadRequest,
     "add_boundary_condition": AddBoundaryConditionRequest,
     "create_mesh": CreateMeshRequest,
     "validate_analysis": ValidateAnalysisRequest,
@@ -539,6 +606,7 @@ CreateAnalysisInput = CreateAnalysisParams = CreateAnalysisRequest
 AssignMaterialInput = AssignMaterialParams = AssignMaterialRequest
 AddConstraintInput = AddConstraintParams = AddConstraintRequest
 AddLoadInput = AddLoadParams = AddLoadRequest
+AddRemoteLoadInput = AddRemoteLoadParams = AddRemoteLoadRequest
 AddBoundaryConditionInput = AddBoundaryConditionParams = AddBoundaryConditionRequest
 CreateMeshInput = CreateMeshParams = CreateMeshRequest
 ValidateAnalysisInput = ValidateAnalysisParams = ValidateAnalysisRequest
@@ -587,6 +655,9 @@ __all__ = [
     "AddLoadRequest",
     "AddLoadInput",
     "AddLoadParams",
+    "AddRemoteLoadRequest",
+    "AddRemoteLoadInput",
+    "AddRemoteLoadParams",
     "AddBoundaryConditionRequest",
     "AddBoundaryConditionInput",
     "AddBoundaryConditionParams",

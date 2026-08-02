@@ -23,6 +23,7 @@ from freecad_fem_mcp.bridge import BRIDGE_METHODS  # noqa: E402
 from freecad_fem_mcp.models import (  # noqa: E402
     AddBoundaryConditionRequest,
     AddLoadRequest,
+    AddRemoteLoadRequest,
     CreateMeshRequest,
     GetResultsRequest,
     PUBLIC_REQUEST_MODELS,
@@ -47,6 +48,8 @@ def test_public_requests_are_closed_and_have_no_action_escape_hatch() -> None:
         assert method in BRIDGE_METHODS
         assert isinstance(action, str) and action
     assert {method for method, _action in PUBLIC_TOOL_ACTIONS.values()} == set(ALLOWED_METHODS)
+    assert PUBLIC_TOOL_ACTIONS["add_remote_load"] == ("remote_load", "add")
+    assert "remote_load" in BRIDGE_METHODS
 
 
 def test_typed_load_and_boundary_requests_reject_extra_or_nonfinite_values() -> None:
@@ -113,15 +116,122 @@ def test_public_numeric_limits_remain_bounded() -> None:
         CreateMeshRequest(analysis_id="A" * 257)
 
 
+def test_remote_load_public_request_is_closed_and_mode_specific() -> None:
+    target = {"object_name": "Geometry", "subelements": ["Face1"]}
+    valid = AddRemoteLoadRequest(
+        analysis_id="Analysis",
+        targets=[target],
+        reference_point_m=[0.0, 0.0, 0.0],
+        force_n=[1.0, 0.0, 0.0],
+    )
+    assert valid.force_n == [1.0, 0.0, 0.0]
+    both = AddRemoteLoadRequest(
+        analysis_id="Analysis",
+        targets=[target],
+        reference_point_m=[1e9, -1e9, 0.0],
+        force_n=[1e15, 0.0, 0.0],
+        moment_n_m=[0.0, -1e15, 0.0],
+    )
+    assert both.moment_n_m == [0.0, -1e15, 0.0]
+
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(
+            analysis_id="Analysis",
+            targets=[target],
+            reference_point_m=[0.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(
+            analysis_id="Analysis",
+            targets=[target],
+            reference_point_m=[0.0, 0.0, 0.0],
+            force_n=[0.0, 0.0, 0.0],
+            moment_n_m=[0.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(
+            analysis_id="Analysis",
+            targets=[target],
+            reference_point_m=[0.0, 0.0, 0.0],
+            force_n=[1.0, 0.0, 0.0],
+            code="exec(1)",
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("reference_point_m", [1_000_000_000.1, 0.0, 0.0]),
+        ("reference_point_m", [float("nan"), 0.0, 0.0]),
+        ("reference_point_m", [float("inf"), 0.0, 0.0]),
+        ("reference_point_m", [True, 0.0, 0.0]),
+        ("reference_point_m", ["1 m", 0.0, 0.0]),
+        ("reference_point_m", [0.0, 0.0]),
+        ("reference_point_m", [0.0, 0.0, 0.0, 0.0]),
+        ("force_n", [1_000_000_000_000_000.1, 0.0, 0.0]),
+        ("force_n", [float("nan"), 0.0, 0.0]),
+        ("force_n", [True, 0.0, 0.0]),
+        ("force_n", ["1 N", 0.0, 0.0]),
+        ("force_n", [0.0, 0.0]),
+        ("moment_n_m", [1_000_000_000_000_000.1, 0.0, 0.0]),
+        ("moment_n_m", [float("inf"), 0.0, 0.0]),
+        ("moment_n_m", [0.0, False, 0.0]),
+        ("moment_n_m", ["1 N*m", 0.0, 0.0]),
+        ("moment_n_m", [0.0, 0.0, 0.0, 0.0]),
+        ("force_n", []),
+        ("moment_n_m", []),
+    ],
+)
+def test_remote_load_public_model_rejects_nonfinite_coercion_and_bounds(
+    field: str, value: list[object]
+) -> None:
+    target = {"object_name": "Geometry", "subelements": ["Face1"]}
+    params: dict[str, object] = {
+        "analysis_id": "Analysis",
+        "targets": [target],
+        "reference_point_m": [0.0, 0.0, 0.0],
+        "force_n": [1.0, 0.0, 0.0],
+    }
+    params[field] = value
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(**params)
+
+
+def test_remote_load_public_model_rejects_empty_targets_and_nested_extras() -> None:
+    base = {
+        "analysis_id": "Analysis",
+        "reference_point_m": [0.0, 0.0, 0.0],
+        "force_n": [1.0, 0.0, 0.0],
+    }
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(**base, targets=[])
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(
+            **base,
+            targets=[
+                {
+                    "object_name": "Geometry",
+                    "subelements": ["Face1"],
+                    "property": "Force",
+                }
+            ],
+        )
+
+
 class _RecordingOperations:
     app = None
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, object]]] = []
+        self.remote_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def add_constraint(self, analysis_id: str, kind: str, data: dict[str, object]) -> dict[str, str]:
         self.calls.append((analysis_id, kind, data))
         return {"name": "Constraint"}
+
+    def add_remote_load(self, *args: object, **kwargs: object) -> dict[str, str]:
+        self.remote_calls.append((args, kwargs))
+        return {"name": "RemoteLoad"}
 
 
 class _EmptySelection:
@@ -221,6 +331,130 @@ def test_addon_revalidates_typed_boundary_requests() -> None:
             service(Request(2, "boundary_condition", params))
 
 
+def _remote_request_params() -> dict[str, object]:
+    return {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
+        "reference_point_m": [0.0, 0.0, 0.0],
+        "force_n": [1.0, 0.0, 0.0],
+    }
+
+
+def test_addon_accepts_a_valid_remote_load_without_a_generic_property_path() -> None:
+    service, operations = _service()
+    result = service(Request(10, "remote_load", _remote_request_params()))
+    assert result["remote_load_id"] == "RemoteLoad"
+    assert operations.remote_calls or operations.calls
+
+
+@pytest.mark.parametrize("subelement", ("Vertex1", "Edge1", "Face1"))
+def test_addon_remote_load_accepts_each_supported_single_shape_kind(subelement: str) -> None:
+    service, _operations = _service()
+    params = _remote_request_params()
+    params["targets"] = [{"object_name": "Geometry", "subelements": [subelement]}]
+    result = service(Request(16, "remote_load", params))
+    assert result["remote_load_id"] == "RemoteLoad"
+
+
+def test_addon_remote_load_rejects_zero_or_missing_payload() -> None:
+    service, _operations = _service()
+    for payload in (
+        {},
+        {"force_n": [0.0, 0.0, 0.0]},
+        {"moment_n_m": [0.0, 0.0, 0.0]},
+        {"force_n": [0.0, 0.0, 0.0], "moment_n_m": [0.0, 0.0, 0.0]},
+    ):
+        params = _remote_request_params()
+        params.pop("force_n", None)
+        params.update(payload)
+        with pytest.raises(ServiceError):
+            service(Request(11, "remote_load", params))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("reference_point_m", [1_000_000_000.1, 0.0, 0.0]),
+        ("reference_point_m", [float("nan"), 0.0, 0.0]),
+        ("reference_point_m", [float("inf"), 0.0, 0.0]),
+        ("reference_point_m", [True, 0.0, 0.0]),
+        ("reference_point_m", ["1 m", 0.0, 0.0]),
+        ("reference_point_m", [0.0, 0.0]),
+        ("reference_point_m", [0.0, 0.0, 0.0, 0.0]),
+        ("force_n", [1_000_000_000_000_000.1, 0.0, 0.0]),
+        ("force_n", [float("nan"), 0.0, 0.0]),
+        ("force_n", [True, 0.0, 0.0]),
+        ("force_n", ["1 N", 0.0, 0.0]),
+        ("force_n", [0.0, 0.0]),
+        ("moment_n_m", [1_000_000_000_000_000.1, 0.0, 0.0]),
+        ("moment_n_m", [float("inf"), 0.0, 0.0]),
+        ("moment_n_m", [0.0, False, 0.0]),
+        ("moment_n_m", ["1 N*m", 0.0, 0.0]),
+        ("moment_n_m", [0.0, 0.0, 0.0, 0.0]),
+    ],
+)
+def test_addon_remote_load_rejects_nonfinite_coercion_and_bounds(
+    field: str, value: list[object]
+) -> None:
+    service, _operations = _service()
+    params = _remote_request_params()
+    params[field] = value
+    with pytest.raises(ServiceError):
+        service(Request(12, "remote_load", params))
+
+
+@pytest.mark.parametrize(
+    "escape_field",
+    (
+        "code",
+        "inp",
+        "property",
+        "native_property",
+        "coordinate",
+        "coordinate_system",
+        "mode",
+        "force_mode",
+        "moment_mode",
+    ),
+)
+def test_addon_remote_load_rejects_generic_escape_fields(escape_field: str) -> None:
+    service, _operations = _service()
+    params = _remote_request_params()
+    params[escape_field] = "__import__('os').system('whoami')"
+    with pytest.raises(ServiceError, match="unknown"):
+        service(Request(13, "remote_load", params))
+
+
+def test_addon_remote_load_rejects_empty_whole_mixed_or_unsupported_targets() -> None:
+    service, _operations = _service()
+    bad_targets = (
+        [],
+        [{"object_name": "Geometry", "subelements": []}],
+        [{"object_name": "Geometry", "subelements": ["Face1", "Edge1"]}],
+        [{"object_name": "Geometry", "subelements": ["Solid1"]}],
+        [{"object_name": "Geometry", "subelements": ["Face1"], "code": "x"}],
+        [{"object_name": "Geometry", "subelements": ["face1"]}],
+        [{"object_name": "Geometry", "subelements": "Face1"}],
+        [{"object_name": "Geometry", "subelements": [None]}],
+        {"object_name": "Geometry", "subelements": ["Face1"]},
+        [{"object_name": "Geometry", "subelements": ["Vertex"]}],
+    )
+    for targets in bad_targets:
+        params = _remote_request_params()
+        params["targets"] = targets
+        with pytest.raises(ServiceError):
+            service(Request(14, "remote_load", params))
+
+    params = _remote_request_params()
+    params["targets"] = [
+        {"object_name": "Geometry", "subelements": ["Face{}".format(index)]}
+        for index in range(129)
+    ]
+    with pytest.raises(ServiceError):
+        service(Request(15, "remote_load", params))
+
+
 # One minimal request for every public method/action.  Unknown fields are
 # checked before dispatch, so these cases do not need a live FreeCAD document.
 _ROUTE_CASES: tuple[tuple[tuple[str, str], dict[str, object]], ...] = (
@@ -249,6 +483,16 @@ _ROUTE_CASES: tuple[tuple[tuple[str, str], dict[str, object]], ...] = (
     (
         ("boundary_condition", "add"),
         {"action": "add", "analysis_id": "Analysis", "boundary_type": "fixed"},
+    ),
+    (
+        ("remote_load", "add"),
+        {
+            "action": "add",
+            "analysis_id": "Analysis",
+            "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
+            "reference_point_m": [0.0, 0.0, 0.0],
+            "force_n": [1.0, 0.0, 0.0],
+        },
     ),
     (("mesh", "create"), {"action": "create", "analysis_id": "Analysis"}),
     (("validate", "validate"), {"action": "validate", "analysis_id": "Analysis"}),

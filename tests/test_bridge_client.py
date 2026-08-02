@@ -72,7 +72,7 @@ def test_bridge_config_is_loopback_only() -> None:
 
 
 def test_bridge_allow_list_includes_typed_load_operations() -> None:
-    assert {"load", "boundary_condition"}.issubset(BRIDGE_METHODS)
+    assert {"load", "remote_load", "boundary_condition"}.issubset(BRIDGE_METHODS)
 
 
 def test_windows_pid_check_uses_read_only_helper_not_os_kill(monkeypatch) -> None:

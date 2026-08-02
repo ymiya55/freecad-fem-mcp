@@ -8,6 +8,7 @@ from freecad_fem_mcp.models import (
     AnalysisRequest,
     ConstraintRequest,
     AddLoadRequest,
+    AddRemoteLoadRequest,
     EntityRef,
     MaterialRequest,
     MeshRequest,
@@ -117,6 +118,71 @@ def test_boundary_condition_values_are_type_specific() -> None:
             analysis_id="Analysis",
             boundary_type="displacement",
             displacement_m=[0.0, math.inf, 0.0],
+        )
+
+
+def test_remote_load_requires_bounded_targets_and_nonzero_force_or_moment() -> None:
+    targets = [EntityRef(object_name="Bracket", subelements=["Face1"])]
+    force = AddRemoteLoadRequest(
+        analysis_id="Analysis",
+        targets=targets,
+        reference_point_m=[0.0, 0.0, 0.0],
+        force_n=[100.0, 0.0, 0.0],
+    )
+    assert force.reference_point_m == [0.0, 0.0, 0.0]
+    assert force.force_n == [100.0, 0.0, 0.0]
+
+    moment_only = AddRemoteLoadRequest(
+        analysis_id="Analysis",
+        targets=targets,
+        reference_point_m=[1.0, -2.0, 3.0],
+        force_n=[0.0, 0.0, 0.0],
+        moment_n_m=[0.0, 1.0, 0.0],
+    )
+    assert moment_only.moment_n_m == [0.0, 1.0, 0.0]
+
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(
+            analysis_id="Analysis",
+            targets=[],
+            reference_point_m=[0.0, 0.0, 0.0],
+            force_n=[1.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(
+            analysis_id="Analysis",
+            targets=targets,
+            reference_point_m=[0.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(
+            analysis_id="Analysis",
+            targets=targets,
+            reference_point_m=[0.0, 0.0, 0.0],
+            force_n=[0.0, 0.0, 0.0],
+            moment_n_m=[0.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(
+            analysis_id="Analysis",
+            targets=targets,
+            reference_point_m=[1_000_000_000.1, 0.0, 0.0],
+            force_n=[1.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(
+            analysis_id="Analysis",
+            targets=targets,
+            reference_point_m=[0.0, 0.0, 0.0],
+            force_n=[1_000_000_000_000_000.1, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddRemoteLoadRequest(
+            analysis_id="Analysis",
+            targets=targets,
+            reference_point_m=[0.0, 0.0, 0.0],
+            force_n=[1.0, 0.0, 0.0],
+            coordinate_system="global",
         )
 
 

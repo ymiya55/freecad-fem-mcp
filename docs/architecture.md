@@ -20,7 +20,7 @@ MCPプロセスはFreeCADモジュールを直接importしません。Addonだ�
 
 `src/freecad_fem_mcp`は次を担当します。
 
-- 18個の固定MCPツール
+- 21個の固定MCPツール
 - Pydanticによる厳格な入力スキーマ
 - MCP tool annotation
 - 接続レコードの検証

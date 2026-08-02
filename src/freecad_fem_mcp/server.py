@@ -36,6 +36,7 @@ from .models import (
     AddBoundaryConditionRequest,
     AddConstraintRequest,
     AddLoadRequest,
+    AddRemoteLoadRequest,
     AssignMaterialRequest,
     BoundedPath,
     BoundedText,
@@ -54,6 +55,8 @@ from .models import (
     OptionalText,
     OpenModelRequest,
     PositiveFiniteFloat,
+    RemoteLoadVector3,
+    RemoteReferenceVector3,
     SaveDocumentRequest,
     SetViewRequest,
     ShowResultRequest,
@@ -75,6 +78,7 @@ TOOL_NAMES = (
     "assign_material",
     "add_constraint",
     "add_load",
+    "add_remote_load",
     "add_boundary_condition",
     "create_mesh",
     "validate_analysis",
@@ -98,6 +102,7 @@ PUBLIC_TOOL_ACTIONS = {
     "assign_material": ("material", "assign"),
     "add_constraint": ("constraint", "add"),
     "add_load": ("load", "add"),
+    "add_remote_load": ("remote_load", "add"),
     "add_boundary_condition": ("boundary_condition", "add"),
     "create_mesh": ("mesh", "create"),
     "validate_analysis": ("validate", "validate"),
@@ -453,6 +458,44 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             acceleration_m_s2=acceleration_m_s2,
         )
         return await invoke("load", "add", request)
+
+    @app.tool(
+        name="add_remote_load",
+        description=(
+            "Add a remote global force and/or moment at a reference point. Targets "
+            "must identify at least one coupled region; reference_point_m is in "
+            "global meters, force_n in global newtons, and moment_n_m in global "
+            "newton-meters. At least one load vector must be non-zero."
+        ),
+        annotations=ann(readonly=False, destructive=False),
+    )
+    async def add_remote_load(
+        analysis_id: BoundedText,
+        targets: Annotated[
+            list[EntityRef],
+            Field(
+                min_length=1,
+                max_length=128,
+                description=(
+                    "At least one coupled-region entity reference; each item must "
+                    "contain object_name and subelements."
+                ),
+            ),
+        ],
+        reference_point_m: RemoteReferenceVector3,
+        document_id: BoundedText | None = None,
+        force_n: RemoteLoadVector3 | None = None,
+        moment_n_m: RemoteLoadVector3 | None = None,
+    ) -> Any:
+        request = AddRemoteLoadRequest(
+            analysis_id=analysis_id,
+            targets=targets,
+            reference_point_m=reference_point_m,
+            document_id=document_id,
+            force_n=force_n,
+            moment_n_m=moment_n_m,
+        )
+        return await invoke("remote_load", "add", request)
 
     @app.tool(
         name="add_boundary_condition",

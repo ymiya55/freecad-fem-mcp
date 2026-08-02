@@ -29,6 +29,7 @@ def test_fixed_tool_surface_has_no_generic_escape_hatches() -> None:
         "assign_material",
         "add_constraint",
         "add_load",
+        "add_remote_load",
         "add_boundary_condition",
         "create_mesh",
         "validate_analysis",
@@ -100,6 +101,15 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
             targets=[{"object_name": "Cantilever", "subelements": ["Face1"]}],
         )
     )
+    remote_fn = getattr(tools["add_remote_load"], "fn", tools["add_remote_load"])
+    asyncio.run(
+        remote_fn(
+            analysis_id="Analysis",
+            targets=[{"object_name": "Cantilever", "subelements": ["Face1"]}],
+            reference_point_m=[0.0, 0.0, 0.0],
+            force_n=[10.0, 0.0, 0.0],
+        )
+    )
     boundary_fn = getattr(tools["add_boundary_condition"], "fn", tools["add_boundary_condition"])
     asyncio.run(
         boundary_fn(
@@ -113,9 +123,14 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
     assert client.calls[0][1]["action"] == "add"
     assert client.calls[0][1]["load_type"] == "force"
     assert client.calls[0][1]["force_n"] == 10.0
-    assert client.calls[1][0] == "boundary_condition"
+    assert PUBLIC_TOOL_ACTIONS["add_remote_load"] == ("remote_load", "add")
+    assert client.calls[1][0] == "remote_load"
     assert client.calls[1][1]["action"] == "add"
-    assert client.calls[1][1]["boundary_type"] == "displacement"
+    assert client.calls[1][1]["reference_point_m"] == [0.0, 0.0, 0.0]
+    assert client.calls[1][1]["force_n"] == [10.0, 0.0, 0.0]
+    assert client.calls[2][0] == "boundary_condition"
+    assert client.calls[2][1]["action"] == "add"
+    assert client.calls[2][1]["boundary_type"] == "displacement"
 
     with pytest.raises(ValidationError):
         asyncio.run(
@@ -131,3 +146,23 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
     acceleration_schema = load_schema["properties"]["acceleration_m_s2"]["anyOf"][0]
     assert acceleration_schema["maxItems"] == 3
     assert acceleration_schema["minItems"] == 3
+
+    remote_schema = getattr(tools["add_remote_load"], "parameters", {})
+    assert remote_schema["additionalProperties"] is False
+    assert remote_schema["properties"]["targets"]["minItems"] == 1
+    assert remote_schema["properties"]["reference_point_m"]["minItems"] == 3
+    assert remote_schema["properties"]["reference_point_m"]["items"]["le"] == 1e9
+    force_schema = remote_schema["properties"]["force_n"]["anyOf"][0]
+    assert force_schema["items"]["le"] == 1e15
+    assert "coordinate_system" not in remote_schema["properties"]
+
+    with pytest.raises(ValidationError):
+        asyncio.run(
+            remote_fn(
+                analysis_id="Analysis",
+                targets=[{"object_name": "Cantilever", "subelements": ["Face1"]}],
+                reference_point_m=[0.0, 0.0, 0.0],
+                force_n=[0.0, 0.0, 0.0],
+                moment_n_m=[0.0, 0.0, 0.0],
+            )
+        )

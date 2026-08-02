@@ -93,6 +93,15 @@ CalculiXを実行する。完了後、変位結果を取得してGUIへ表示す
 新しい分類済みAPIを明示する場合は、固定面に`add_boundary_condition`、荷重面に
 `add_load`を使うよう指示します。重力はグローバル荷重なので`targets=[]`が有効です。
 
+remote force / momentは`add_remote_load`で指定します。結合領域の`targets`は1件以上を
+必須とし、`reference_point_m`はglobal座標のm、`force_n`はN、`moment_n_m`はN·mです。
+FreeCADのモード名やプロパティ名は入力しません。
+
+```text
+Pocket002のFace1を結合領域として、global参照点[0.1, 0.2, 0.3] mに
+force [100, 0, -50] Nとmoment [0, 25, 0] N·mを与えるremote loadを追加して。
+```
+
 拘束対象を明示的に呼ぶ場合、`targets`の要素は次の形です。`object_id`ではなく`object_name`を使用します。
 
 ```json

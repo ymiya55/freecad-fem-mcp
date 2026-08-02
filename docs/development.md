@@ -67,7 +67,7 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 1. AddonをユーザーModディレクトリへ導入する。
 2. FreeCAD GUIを起動し、bridge-v1.jsonの生成とloopback待受を確認する。
 3. 軸力棒またはカンチレバーfixtureを開く。
-4. MCP経由でAnalysis、新Solver、材料を作り、`add_boundary_condition`と`add_load`でfixed、displacement、force、pressure、gravityを作る。
+4. MCP経由でAnalysis、新Solver、材料を作り、`add_boundary_condition`と`add_load`でfixed、displacement、force、pressure、gravityを作る。remote loadの試験では`add_remote_load`で結合領域、参照点、力・モーメントを明示する。
 5. Gmshジョブを完了させ、ネイティブFemMeshが非空であることを確認する。
 6. 公式CalculiX事前検証を成功させる。
 7. CalculiXジョブを完了させる。
@@ -86,10 +86,11 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 - `Fem::FemPostPipeline`から13の解析結果フィールドと334値を取得
 - 変位結果のGUI表示と1280×720 PNGキャプチャに成功
 - 分類済みAPIからfixed、displacement、force、pressure、gravityをFreeCAD 1.1.3 GUI文書へ生成し、重力をグローバル`Fem::ConstraintPython`として確認
+- `add_remote_load`からglobal remote force / momentを`Fem::ConstraintRigidBody`として生成し、GUI表示とcapabilityを確認
 - 不正トークンによる解析変更を拒否し、FreeCADドキュメントが不変
 - 軸力棒の応力10.0 MPa（理論10.0 MPa、誤差0%）
 - 荷重端変位0.00473854 mm（理論0.00476190 mm、誤差0.4907%）
-- 20公開ツールのroute/action対応、閉じたschema、未知フィールド・偽装action・非有限値・ゼロ重力・ネストした余剰フィールド拒否を安全性試験で確認
+- 21公開ツールのroute/action対応、閉じたschema、未知フィールド・偽装action・非有限値・ゼロ荷重・形状種別混在・ネストした余剰フィールド拒否を安全性試験で確認
 - 通常pytest（1件skip）、Ruff、repository scanner、敵対的security pytest、Bandit、pip-auditが合格
 
 ## ドキュメント
