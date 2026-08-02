@@ -1,5 +1,9 @@
 # FreeCAD FEM MCP
 
+[![CI](https://github.com/ymiya55/freecad-fem-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ymiya55/freecad-fem-mcp/actions/workflows/ci.yml)
+[![Security checks](https://github.com/ymiya55/freecad-fem-mcp/actions/workflows/security.yml/badge.svg)](https://github.com/ymiya55/freecad-fem-mcp/actions/workflows/security.yml)
+[![CodeQL](https://github.com/ymiya55/freecad-fem-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/ymiya55/freecad-fem-mcp/actions/workflows/codeql.yml)
+
 FreeCAD 1.1.x の新しい `SolverCalculiX` フレームワークを、MCPクライアントからGUI付きで操作するためのWindows向けMCPサーバーです。外部のstdio MCPプロセスと、FreeCAD内で動く最小Addonを、認証付きlocalhostブリッジで接続します。
 
 旧 `SolverCcxTools` / `femtools.ccxtools` には対応しません。

@@ -23,17 +23,23 @@ jobs:
       - name: Install audit tools and package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . bandit pip-audit
-      - name: Bandit (high confidence findings)
-        run: bandit -r src addon security scripts -lll -iii
-      - name: pip-audit
-        run: pip-audit
+          python -m pip install -e ".[dev]"
+      - name: Bandit (repository policy)
+        run: bandit -c .bandit -r src addon scripts security -lll -iii
+      - name: pip-audit dependencies (exclude editable project)
+        # The project is installed editable so tests/imports use src/.  Audit
+        # its resolved third-party environment separately; pip-audit cannot
+        # vulnerability-score the local checkout itself.
+        run: pip-audit --local --skip-editable
       - name: Repository security gate
         run: python scripts/security_scan.py
 
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
         with:
