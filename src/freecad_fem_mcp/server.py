@@ -29,6 +29,7 @@ from .bridge import (
     BridgeConfig,
     BridgeError,
     LocalNdjsonTransport,
+    connection_record_path,
     load_connection_record,
 )
 from .models import (
@@ -129,7 +130,9 @@ class _FallbackMCP:
 def _bridge_client_from_environment() -> BridgeClient:
     """Create the default local client without printing or exposing credentials."""
 
-    record = load_connection_record()
+    configured_record_path = os.environ.get("FREECAD_FEM_BRIDGE_RECORD")
+    watch_path = connection_record_path(configured_record_path)
+    record = load_connection_record(configured_record_path)
     try:
         port = int(os.environ.get("FREECAD_FEM_BRIDGE_PORT", ""))
     except ValueError:
@@ -157,7 +160,11 @@ def _bridge_client_from_environment() -> BridgeClient:
         # traceback.  Fall back to the known-safe loopback endpoint; auth remains
         # required for every request.
         config = BridgeConfig()
-    return BridgeClient(LocalNdjsonTransport(config), token=token)
+    return BridgeClient(
+        LocalNdjsonTransport(config),
+        token=token,
+        record_path=watch_path,
+    )
 
 
 def _as_mapping(request: Any) -> Mapping[str, Any]:

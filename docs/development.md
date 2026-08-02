@@ -75,6 +75,8 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 9. 数値結果、GUI表示、スクリーンショットを確認する。
 10. 無認証・不正入力・キャンセル・再接続時にドキュメント整合性が維持されることを確認する。
 
+ジョブ試験では、queuedの即時キャンセル、runningのterminateとkillフォールバック、完了済み状態の不変性、未知job拒否、stdout/stderrのUTF-8正規化・上限・資格情報除去を確認します。再接続試験では同じMCP bridge clientを維持したままFreeCADを再起動し、新しいPID・port・トークンへ1回だけ更新されることを確認します。
+
 現在のGUI縦切りリリースゲートは、Gmsh/CalculiXの正常終了、有限な結果値、非空の結果フィールド、GUI表示・画像取得、および安全性試験の全合格です。定量精度ベンチマークは、軸力棒の応力`F/A`と変位`FL/EA`に対して2.5 mmメッシュで2%以内を合格基準とします。
 
 ## 検証済みベースライン（2026-08-02）

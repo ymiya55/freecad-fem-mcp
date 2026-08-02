@@ -105,4 +105,6 @@ CalculiXを実行する。完了後、変位結果を取得してGUIへ表示す
 4. MCPクライアントを再起動してツール一覧を更新する。
 5. MCP InspectorでSTDIOサーバー単体の初期化を確認する。
 
+長時間動作するMCPクライアントは、FreeCAD再起動後の最初の接続失敗時に新しい接続レコードを1回だけ再読込します。複数のFreeCAD GUIを同時起動すると最後に起動したbridgeが接続レコードを所有するため、MCP操作対象のFreeCADは1プロセスにすることを推奨します。
+
 Codexの設定仕様は[Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp.md)、Inspectorの操作は[MCP Inspector documentation](https://modelcontextprotocol.io/docs/tools/inspector)を参照してください。
