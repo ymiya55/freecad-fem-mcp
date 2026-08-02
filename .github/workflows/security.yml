@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
   schedule:
     - cron: '23 3 * * 1'
 
@@ -15,14 +16,15 @@ jobs:
     name: Bandit and pip-audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: pip
       - name: Install audit tools and package
         run: |
           python -m pip install --upgrade pip
+          python -m pip install --upgrade "setuptools>=83.0.0"
           python -m pip install -e ".[dev]"
       - name: Bandit (repository policy)
         run: bandit -c .bandit -r src addon scripts security -lll -iii
@@ -41,11 +43,13 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: 'false'
