@@ -4,8 +4,10 @@ import pytest
 from pydantic import ValidationError
 
 from freecad_fem_mcp.models import (
+    AddBoundaryConditionRequest,
     AnalysisRequest,
     ConstraintRequest,
+    AddLoadRequest,
     EntityRef,
     MaterialRequest,
     MeshRequest,
@@ -45,6 +47,77 @@ def test_constraint_targets_are_explicit_and_empty_is_selection() -> None:
         force_n=[10.0, 0.0, 0.0],
     )
     assert target.targets[0].object_name == "Bracket"
+
+
+def test_typed_loads_require_only_their_matching_si_value() -> None:
+    force = AddLoadRequest(analysis_id="Analysis", load_type="force", force_n=10.0)
+    assert force.force_n == 10.0
+    pressure = AddLoadRequest(analysis_id="Analysis", load_type="pressure", pressure_pa=12.5)
+    assert pressure.pressure_pa == 12.5
+    gravity = AddLoadRequest(
+        analysis_id="Analysis",
+        load_type="gravity",
+        acceleration_m_s2=[0.0, -9.81, 0.0],
+    )
+    assert gravity.acceleration_m_s2 == [0.0, -9.81, 0.0]
+
+    with pytest.raises(ValidationError):
+        AddLoadRequest(analysis_id="Analysis", load_type="force")
+    with pytest.raises(ValidationError):
+        AddLoadRequest(analysis_id="Analysis", load_type="pressure", force_n=1.0)
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="gravity",
+            acceleration_m_s2=[0.0, -9.81],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="gravity",
+            acceleration_m_s2=[0.0, -9.81, 0.0],
+            pressure_pa=1.0,
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="gravity",
+            acceleration_m_s2=[0.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(analysis_id="Analysis", load_type="force", force_n=math.nan)
+
+
+def test_boundary_condition_values_are_type_specific() -> None:
+    fixed = AddBoundaryConditionRequest(analysis_id="Analysis", boundary_type="fixed")
+    assert fixed.displacement_m is None
+    displacement = AddBoundaryConditionRequest(
+        analysis_id="Analysis",
+        boundary_type="displacement",
+        displacement_m=[0.0, 0.001, 0.0],
+    )
+    assert displacement.displacement_m == [0.0, 0.001, 0.0]
+
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(
+            analysis_id="Analysis",
+            boundary_type="fixed",
+            displacement_m=[0.0, 0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(analysis_id="Analysis", boundary_type="displacement")
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(
+            analysis_id="Analysis",
+            boundary_type="displacement",
+            displacement_m=[0.0, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(
+            analysis_id="Analysis",
+            boundary_type="displacement",
+            displacement_m=[0.0, math.inf, 0.0],
+        )
 
 
 def test_path_controls_are_not_arbitrary_commands() -> None:

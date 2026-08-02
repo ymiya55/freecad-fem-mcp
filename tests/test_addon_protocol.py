@@ -24,6 +24,8 @@ def test_allowlist_and_nested_auth_shape() -> None:
     request = parse_request_line(json.dumps({"id": 1, "method": "status", "params": {}, "auth": {"token": "x"}}))
     assert request.method == "status"
     assert request.token == "x"
+    assert parse_request_line(json.dumps({"id": 2, "method": "load", "params": {}})).method == "load"
+    assert parse_request_line(json.dumps({"id": 3, "method": "boundary_condition", "params": {}})).method == "boundary_condition"
     with pytest.raises(ProtocolError):
         parse_request_line('{"id":1,"method":"ping","params":{}}')
     with pytest.raises(ProtocolError):
@@ -197,3 +199,178 @@ def test_gmsh_element_order_is_native_enum() -> None:
     result = operations.create_mesh("Analysis", "Mesh", shape="Geometry", ElementOrder=2)
     mesh = app.ActiveDocument.getObject(result["name"])
     assert mesh.ElementOrder == "2nd"
+
+
+def test_typed_load_and_boundary_routes_use_native_constraint_kinds() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        def __init__(self):
+            self.calls = []
+
+        def add_constraint(self, analysis, kind, params):
+            self.calls.append((analysis, kind, params))
+            return {"name": "Native_" + kind}
+
+    operations = _Operations()
+    service = FEMService(operations=operations, selection=_Selection())
+    target = [{"object_name": "Beam", "subelements": ["Face1"]}]
+
+    force = service(Request(1, "load", {
+        "action": "add", "analysis_id": "Analysis", "load_type": "force",
+        "targets": target, "force_n": 1250.0,
+    }))
+    assert force["load_id"] == "Native_force"
+    assert operations.calls[-1][:2] == ("Analysis", "force")
+    assert operations.calls[-1][2] == {"references": [{"object": "Beam", "sub_element": "Face1"}], "force": 1250.0}
+
+    gravity = service(Request(2, "load", {
+        "action": "add", "analysis_id": "Analysis", "load_type": "gravity",
+        "targets": target, "acceleration_m_s2": [3.0, 4.0, 0.0],
+    }))
+    assert gravity["load_id"] == "Native_selfweight"
+    assert operations.calls[-1][:2] == ("Analysis", "selfweight")
+    assert operations.calls[-1][2]["gravity_acceleration"] == 5.0
+    assert operations.calls[-1][2]["gravity_direction"] == [3.0, 4.0, 0.0]
+
+    boundary = service(Request(3, "boundary_condition", {
+        "action": "add", "analysis_id": "Analysis", "boundary_type": "displacement",
+        "targets": target, "displacement_m": [0.0, 0.001, -0.002],
+    }))
+    assert boundary["boundary_condition_id"] == "Native_displacement"
+    assert operations.calls[-1][:2] == ("Analysis", "displacement")
+    assert operations.calls[-1][2]["xFree"] is False
+    assert operations.calls[-1][2]["y"] == 0.001
+
+
+def test_typed_routes_reject_wrong_values_and_extra_fields() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        @staticmethod
+        def add_constraint(*_args, **_kwargs):
+            return {"name": "unused"}
+
+    service = FEMService(operations=_Operations(), selection=_Selection())
+    base = {"action": "add", "analysis_id": "Analysis", "load_type": "force", "force_n": 1.0}
+    with pytest.raises(ServiceError):
+        service(Request(4, "load", {**base, "pressure_pa": 2.0}))
+    with pytest.raises(ServiceError):
+        service(Request(5, "load", {**base, "force_n": "not-a-number"}))
+    with pytest.raises(ServiceError):
+        service(Request(6, "load", {
+            "action": "add", "analysis_id": "Analysis", "load_type": "gravity",
+            "acceleration_m_s2": [0.0, 9.81],
+        }))
+    with pytest.raises(ServiceError):
+        service(Request(7, "boundary_condition", {
+            "action": "add", "analysis_id": "Analysis", "boundary_type": "fixed",
+            "displacement_m": [0.0, 0.0, 0.0],
+        }))
+    with pytest.raises(ServiceError):
+        service(Request(8, "boundary_condition", {
+            "action": "add", "analysis_id": "Analysis", "boundary_type": "fixed", "extra": True,
+        }))
+
+
+def test_gravity_rejects_zero_acceleration_vector() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        @staticmethod
+        def add_constraint(*_args, **_kwargs):
+            return {"name": "unused"}
+
+    service = FEMService(operations=_Operations(), selection=_Selection())
+    with pytest.raises(ServiceError):
+        service(Request(9, "load", {
+            "action": "add", "analysis_id": "Analysis", "load_type": "gravity",
+            "acceleration_m_s2": [0.0, 0.0, 0.0],
+        }))
+
+
+def test_all_public_routes_reject_unknown_direct_bridge_fields() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        @staticmethod
+        def add_constraint(*_args, **_kwargs):
+            return {"name": "unused"}
+
+    service = FEMService(operations=_Operations(), selection=_Selection(), jobs=object(), pipeline=object())
+    cases = (
+        ("status", {"action": "get"}),
+        ("document", {"action": "active"}),
+        ("selection", {"action": "get"}),
+        ("view", {"action": "set"}),
+        ("capture", {"action": "capture", "scope": "viewport"}),
+        ("open", {"action": "open", "path": "model.FCStd"}),
+        ("save", {"action": "save"}),
+        ("analysis", {"action": "create"}),
+        ("material", {"action": "assign", "analysis_id": "Analysis"}),
+        ("constraint", {"action": "add", "analysis_id": "Analysis", "constraint_type": "fixed"}),
+        ("load", {"action": "add", "analysis_id": "Analysis", "load_type": "force", "force_n": 1.0}),
+        ("boundary_condition", {"action": "add", "analysis_id": "Analysis", "boundary_type": "fixed"}),
+        ("mesh", {"action": "create", "analysis_id": "Analysis"}),
+        ("validate", {"action": "validate", "analysis_id": "Analysis"}),
+        ("jobs", {"action": "start", "analysis_id": "Analysis"}),
+        ("jobs", {"action": "get", "job_id": "Job"}),
+        ("jobs", {"action": "list"}),
+        ("jobs", {"action": "cancel", "job_id": "Job"}),
+        ("results", {"action": "get", "analysis_id": "Analysis"}),
+        ("results", {"action": "show", "analysis_id": "Analysis"}),
+    )
+    for index, (method, params) in enumerate(cases, 20):
+        with pytest.raises(ServiceError):
+            service(Request(index, method, {**params, "code": "print(1)"}))
+
+
+def test_legacy_constraint_rejects_extra_nested_target_fields() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        @staticmethod
+        def add_constraint(*_args, **_kwargs):
+            return {"name": "unused"}
+
+    service = FEMService(operations=_Operations(), selection=_Selection())
+    with pytest.raises(ServiceError):
+        service(Request(40, "constraint", {
+            "action": "add", "analysis_id": "Analysis", "constraint_type": "fixed",
+            "targets": [{"object_name": "Beam", "subelements": ["Face1"], "code": "x"}],
+        }))

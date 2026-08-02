@@ -33,7 +33,9 @@ from .bridge import (
     load_connection_record,
 )
 from .models import (
+    AddBoundaryConditionRequest,
     AddConstraintRequest,
+    AddLoadRequest,
     AssignMaterialRequest,
     BoundedPath,
     BoundedText,
@@ -58,6 +60,7 @@ from .models import (
     StartAnalysisRequest,
     ValueList,
     ValidateAnalysisRequest,
+    Vector3,
 )
 
 TOOL_NAMES = (
@@ -71,6 +74,8 @@ TOOL_NAMES = (
     "create_analysis",
     "assign_material",
     "add_constraint",
+    "add_load",
+    "add_boundary_condition",
     "create_mesh",
     "validate_analysis",
     "start_analysis",
@@ -92,6 +97,8 @@ PUBLIC_TOOL_ACTIONS = {
     "create_analysis": ("analysis", "create"),
     "assign_material": ("material", "assign"),
     "add_constraint": ("constraint", "add"),
+    "add_load": ("load", "add"),
+    "add_boundary_condition": ("boundary_condition", "add"),
     "create_mesh": ("mesh", "create"),
     "validate_analysis": ("validate", "validate"),
     "start_analysis": ("jobs", "start"),
@@ -407,6 +414,81 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             selfweight_acceleration_m_s2=selfweight_acceleration_m_s2 or [],
         )
         return await invoke("constraint", "add", request)
+
+    @app.tool(
+        name="add_load",
+        description=(
+            "Add a typed SI load. Use force_n for force, pressure_pa for pressure, "
+            "or exactly three acceleration_m_s2 components for gravity; targets "
+            "may be empty to use the current GUI selection."
+        ),
+        annotations=ann(readonly=False, destructive=False),
+    )
+    async def add_load(
+        analysis_id: BoundedText,
+        load_type: Literal["force", "pressure", "gravity"],
+        document_id: BoundedText | None = None,
+        targets: Annotated[
+            list[EntityRef],
+            Field(
+                max_length=128,
+                description=(
+                    "Each item must be {object_name, subelements}; use [] for "
+                    "the current GUI selection."
+                ),
+            ),
+        ]
+        | None = None,
+        force_n: FiniteFloat | None = None,
+        pressure_pa: FiniteFloat | None = None,
+        acceleration_m_s2: Vector3 | None = None,
+    ) -> Any:
+        request = AddLoadRequest(
+            analysis_id=analysis_id,
+            load_type=load_type,
+            document_id=document_id,
+            targets=targets or [],
+            force_n=force_n,
+            pressure_pa=pressure_pa,
+            acceleration_m_s2=acceleration_m_s2,
+        )
+        return await invoke("load", "add", request)
+
+    @app.tool(
+        name="add_boundary_condition",
+        description=(
+            "Add a fixed or prescribed-displacement boundary condition. Fixed "
+            "conditions take no displacement; displacement requires exactly three "
+            "displacement_m components in meters. Targets may be empty to use the "
+            "current GUI selection."
+        ),
+        annotations=ann(readonly=False, destructive=False),
+    )
+    async def add_boundary_condition(
+        analysis_id: BoundedText,
+        boundary_type: Literal["fixed", "displacement"],
+        document_id: BoundedText | None = None,
+        targets: Annotated[
+            list[EntityRef],
+            Field(
+                max_length=128,
+                description=(
+                    "Each item must be {object_name, subelements}; use [] for "
+                    "the current GUI selection."
+                ),
+            ),
+        ]
+        | None = None,
+        displacement_m: Vector3 | None = None,
+    ) -> Any:
+        request = AddBoundaryConditionRequest(
+            analysis_id=analysis_id,
+            boundary_type=boundary_type,
+            document_id=document_id,
+            targets=targets or [],
+            displacement_m=displacement_m,
+        )
+        return await invoke("boundary_condition", "add", request)
 
     @app.tool(
         name="create_mesh",

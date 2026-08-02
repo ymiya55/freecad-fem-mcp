@@ -86,6 +86,7 @@ BoundedPath = Annotated[
 BoundedList = Annotated[list[Any], Field(max_length=MAX_LIST)]
 StringList = Annotated[list[BoundedText], Field(max_length=MAX_LIST)]
 ValueList = Annotated[list[FiniteFloat], Field(max_length=MAX_VALUES)]
+Vector3 = Annotated[list[FiniteFloat], Field(min_length=3, max_length=3)]
 BoundedInt = Annotated[StrictInt, Field(ge=0, le=2_147_483_647)]
 
 
@@ -332,6 +333,87 @@ class AddConstraintRequest(StrictModel):
     selfweight_acceleration_m_s2: ValueList = Field(default_factory=list)
 
 
+class AddLoadRequest(StrictModel):
+    """Add one typed SI load while rejecting unrelated value fields."""
+
+    document_id: BoundedText | None = None
+    analysis_id: BoundedText
+    load_type: Literal["force", "pressure", "gravity"]
+    targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
+        default_factory=list,
+        description=(
+            "Entity references using object_name and subelements; an empty list "
+            "uses the current FreeCAD GUI selection."
+        ),
+    )
+    force_n: FiniteFloat | None = Field(
+        default=None,
+        description="Force magnitude in newtons; required only for load_type='force'.",
+    )
+    pressure_pa: FiniteFloat | None = Field(
+        default=None,
+        description="Pressure magnitude in pascals; required only for load_type='pressure'.",
+    )
+    acceleration_m_s2: Vector3 | None = Field(
+        default=None,
+        description=(
+            "Three acceleration components in m/s^2; required only for load_type='gravity'."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_load_values(self) -> "AddLoadRequest":
+        if self.load_type == "force":
+            if self.force_n is None:
+                raise ValueError("force_n is required for load_type='force'")
+            if self.pressure_pa is not None or self.acceleration_m_s2 is not None:
+                raise ValueError("pressure_pa and acceleration_m_s2 are not valid for force")
+        elif self.load_type == "pressure":
+            if self.pressure_pa is None:
+                raise ValueError("pressure_pa is required for load_type='pressure'")
+            if self.force_n is not None or self.acceleration_m_s2 is not None:
+                raise ValueError("force_n and acceleration_m_s2 are not valid for pressure")
+        else:
+            if self.acceleration_m_s2 is None:
+                raise ValueError("acceleration_m_s2 is required for load_type='gravity'")
+            if math.hypot(*self.acceleration_m_s2) <= 0.0:
+                raise ValueError("acceleration_m_s2 must have non-zero magnitude")
+            if self.force_n is not None or self.pressure_pa is not None:
+                raise ValueError("force_n and pressure_pa are not valid for gravity")
+        return self
+
+
+class AddBoundaryConditionRequest(StrictModel):
+    """Add a fixed or prescribed-displacement boundary condition."""
+
+    document_id: BoundedText | None = None
+    analysis_id: BoundedText
+    boundary_type: Literal["fixed", "displacement"]
+    targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
+        default_factory=list,
+        description=(
+            "Entity references using object_name and subelements; an empty list "
+            "uses the current FreeCAD GUI selection."
+        ),
+    )
+    displacement_m: Vector3 | None = Field(
+        default=None,
+        description=(
+            "Three prescribed displacement components in meters; required only "
+            "for boundary_type='displacement'."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_boundary_values(self) -> "AddBoundaryConditionRequest":
+        if self.boundary_type == "fixed":
+            if self.displacement_m is not None:
+                raise ValueError("displacement_m is not valid for boundary_type='fixed'")
+        elif self.displacement_m is None:
+            raise ValueError("displacement_m is required for boundary_type='displacement'")
+        return self
+
+
 class CreateMeshRequest(StrictModel):
     document_id: BoundedText | None = None
     analysis_id: BoundedText
@@ -398,6 +480,8 @@ REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "analysis": AnalysisRequest,
     "material": MaterialRequest,
     "constraint": ConstraintRequest,
+    "load": AddLoadRequest,
+    "boundary_condition": AddBoundaryConditionRequest,
     "mesh": MeshRequest,
     "validate": ValidateRequest,
     "jobs": JobsRequest,
@@ -415,6 +499,8 @@ PUBLIC_REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "create_analysis": CreateAnalysisRequest,
     "assign_material": AssignMaterialRequest,
     "add_constraint": AddConstraintRequest,
+    "add_load": AddLoadRequest,
+    "add_boundary_condition": AddBoundaryConditionRequest,
     "create_mesh": CreateMeshRequest,
     "validate_analysis": ValidateAnalysisRequest,
     "start_analysis": StartAnalysisRequest,
@@ -452,6 +538,8 @@ SaveDocumentInput = SaveDocumentParams = SaveDocumentRequest
 CreateAnalysisInput = CreateAnalysisParams = CreateAnalysisRequest
 AssignMaterialInput = AssignMaterialParams = AssignMaterialRequest
 AddConstraintInput = AddConstraintParams = AddConstraintRequest
+AddLoadInput = AddLoadParams = AddLoadRequest
+AddBoundaryConditionInput = AddBoundaryConditionParams = AddBoundaryConditionRequest
 CreateMeshInput = CreateMeshParams = CreateMeshRequest
 ValidateAnalysisInput = ValidateAnalysisParams = ValidateAnalysisRequest
 StartAnalysisInput = StartAnalysisParams = StartAnalysisRequest
@@ -496,6 +584,12 @@ __all__ = [
     "AddConstraintRequest",
     "AddConstraintInput",
     "AddConstraintParams",
+    "AddLoadRequest",
+    "AddLoadInput",
+    "AddLoadParams",
+    "AddBoundaryConditionRequest",
+    "AddBoundaryConditionInput",
+    "AddBoundaryConditionParams",
     "CreateMeshRequest",
     "CreateMeshInput",
     "CreateMeshParams",
@@ -566,6 +660,7 @@ __all__ = [
     "ValidateInput",
     "ValidateParams",
     "ValueList",
+    "Vector3",
     "ViewRequest",
     "ViewInput",
     "ViewParams",

@@ -306,7 +306,12 @@ class FreeCADOperations:
             raise OperationError("unsupported constraint kind")
         data = dict(params or {})
         name = _safe_name(data.pop("name", "Constraint_" + kind), "Constraint_" + kind)
-        references = self._references(doc, data.pop("references", data.pop("refs", None)))
+        raw_references = data.pop("references", data.pop("refs", None))
+        # FreeCAD 1.1's ConstraintSelfWeight is a global load object and does
+        # not expose a References property.  In particular, an empty GUI
+        # selection is valid for gravity; all other constraint kinds still
+        # require resolved entity references.
+        references = [] if kind == "selfweight" else self._references(doc, raw_references)
         helper = {
             "fixed": "makeConstraintFixed", "displacement": "makeConstraintDisplacement",
             "force": "makeConstraintForce", "pressure": "makeConstraintPressure",
@@ -314,10 +319,11 @@ class FreeCADOperations:
         }[kind]
         with self._transaction(doc, "Add {} constraint".format(kind)):
             obj = self._new_object(doc, _CONSTRAINT_TYPES[kind], name, helper)
-            try:
-                obj.References = references
-            except Exception:
-                pass
+            if kind != "selfweight":
+                try:
+                    obj.References = references
+                except Exception:
+                    pass
             if kind == "fixed":
                 pass
             elif kind == "displacement":
@@ -326,7 +332,12 @@ class FreeCADOperations:
                     if free_key in data:
                         setattr(obj, free_key, bool(data[free_key]))
                     if value_key in data and not bool(data.get(free_key, False)):
-                        setattr(obj, value_key, self._unit_value(data[value_key], "m", value_key))
+                        # FreeCAD 1.1.x exposes displacement values as
+                        # xDisplacement/yDisplacement/zDisplacement.  The
+                        # service's internal x/y/z keys remain stable, but
+                        # must not be assigned as native properties.
+                        native_key = axis + "Displacement"
+                        setattr(obj, native_key, self._unit_value(data[value_key], "m", value_key))
             elif kind == "force":
                 if "force" in data:
                     obj.Force = self._unit_value(data["force"], "N", "force")

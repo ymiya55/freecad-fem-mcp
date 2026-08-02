@@ -35,6 +35,8 @@ BRIDGE_METHODS = frozenset(
         "analysis",
         "material",
         "constraint",
+        "load",
+        "boundary_condition",
         "mesh",
         "validate",
         "jobs",

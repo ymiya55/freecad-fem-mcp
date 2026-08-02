@@ -128,6 +128,11 @@ fallbackでは補完せず、上流APIの追加または検証可能な専用ada
 rigid body/remote条件を追加します。荷重振幅とcase識別子もこの段階でデータモデルを
 確定しますが、非線形stepや組合せ実行は後続段階までfeature gateします。
 
+- **R1.1 完了:** `add_load`と`add_boundary_condition`、capability契約、既存5種のFreeCAD 1.1.3 GUI写像、旧`add_constraint`互換、安全性境界
+- **R1.2:** 明示座標系、集中モーメント、面traction、線・辺荷重
+- **R1.3:** 任意加速度、遠心力、bearing、spring、rigid body/remote条件
+- **R1.4:** boundedな荷重振幅と荷重case識別子（実行・組合せはfeature gate）
+
 ### R2: 固有振動と線形座屈
 
 次に`frequency`と`buckling`を追加します。既存の線形静解析と同じ材料・拘束・

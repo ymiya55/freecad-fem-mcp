@@ -27,6 +27,8 @@ from .bridge import (
 )
 from .models import (
     AddConstraintRequest,
+    AddBoundaryConditionRequest,
+    AddLoadRequest,
     AnalysisRequest,
     AssignMaterialRequest,
     CaptureRequest,
@@ -59,6 +61,7 @@ from .models import (
     ToolResponse,
     ValidateAnalysisRequest,
     ValidateRequest,
+    Vector3,
     ViewRequest,
 )
 from .server import (
@@ -74,6 +77,8 @@ from .server import (
 __all__ = [
     "AnalysisRequest",
     "AddConstraintRequest",
+    "AddLoadRequest",
+    "AddBoundaryConditionRequest",
     "AssignMaterialRequest",
     "CaptureGuiRequest",
     "CancelJobRequest",
@@ -118,6 +123,7 @@ __all__ = [
     "SelectionRequest",
     "StatusRequest",
     "ToolResponse",
+    "Vector3",
     "ShowResultRequest",
     "StartAnalysisRequest",
     "TOOL_NAMES",

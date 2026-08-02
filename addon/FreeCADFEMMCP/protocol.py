@@ -16,7 +16,8 @@ MAX_PARAMS_BYTES = 192 * 1024
 # to the core service contract.  Each request carries an ``action`` in params.
 ALLOWED_METHODS = frozenset({
     "status", "document", "selection", "view", "capture", "open", "save",
-    "analysis", "material", "constraint", "mesh", "validate", "jobs", "results",
+    "analysis", "material", "constraint", "load", "boundary_condition", "mesh",
+    "validate", "jobs", "results",
 })
 
 

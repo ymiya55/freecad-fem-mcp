@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from freecad_fem_mcp.models import AddConstraintRequest
-from freecad_fem_mcp.server import TOOL_NAMES, create_server, get_tool_names
+from freecad_fem_mcp.server import PUBLIC_TOOL_ACTIONS, TOOL_NAMES, create_server, get_tool_names
 
 
 class FakeClient:
@@ -28,6 +28,8 @@ def test_fixed_tool_surface_has_no_generic_escape_hatches() -> None:
         "create_analysis",
         "assign_material",
         "add_constraint",
+        "add_load",
+        "add_boundary_condition",
         "create_mesh",
         "validate_analysis",
         "start_analysis",
@@ -79,3 +81,53 @@ def test_add_constraint_targets_use_object_name_and_subelements() -> None:
     assert "object_id" not in entity_schema["properties"]
     assert "Cantilever" in entity_schema["properties"]["object_name"]["description"]
     assert "Face1" in entity_schema["properties"]["subelements"]["description"]
+
+
+def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
+    assert PUBLIC_TOOL_ACTIONS["add_load"] == ("load", "add")
+    assert PUBLIC_TOOL_ACTIONS["add_boundary_condition"] == ("boundary_condition", "add")
+
+    client = FakeClient()
+    app = create_server(client)
+    tools = getattr(getattr(app, "_tool_manager", None), "_tools", None) or getattr(app, "_tools")
+
+    load_fn = getattr(tools["add_load"], "fn", tools["add_load"])
+    asyncio.run(
+        load_fn(
+            analysis_id="Analysis",
+            load_type="force",
+            force_n=10.0,
+            targets=[{"object_name": "Cantilever", "subelements": ["Face1"]}],
+        )
+    )
+    boundary_fn = getattr(tools["add_boundary_condition"], "fn", tools["add_boundary_condition"])
+    asyncio.run(
+        boundary_fn(
+            analysis_id="Analysis",
+            boundary_type="displacement",
+            displacement_m=[0.0, 0.0, 0.001],
+        )
+    )
+
+    assert client.calls[0][0] == "load"
+    assert client.calls[0][1]["action"] == "add"
+    assert client.calls[0][1]["load_type"] == "force"
+    assert client.calls[0][1]["force_n"] == 10.0
+    assert client.calls[1][0] == "boundary_condition"
+    assert client.calls[1][1]["action"] == "add"
+    assert client.calls[1][1]["boundary_type"] == "displacement"
+
+    with pytest.raises(ValidationError):
+        asyncio.run(
+            load_fn(
+                analysis_id="Analysis",
+                load_type="gravity",
+                acceleration_m_s2=[0.0, 0.0, 0.0],
+            )
+        )
+
+    load_schema = getattr(tools["add_load"], "parameters", {})
+    assert load_schema["additionalProperties"] is False
+    acceleration_schema = load_schema["properties"]["acceleration_m_s2"]["anyOf"][0]
+    assert acceleration_schema["maxItems"] == 3
+    assert acceleration_schema["minItems"] == 3

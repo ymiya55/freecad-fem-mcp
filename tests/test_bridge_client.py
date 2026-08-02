@@ -10,6 +10,7 @@ from freecad_fem_mcp.bridge import (
     BridgeProtocolError,
     BridgeRemoteError,
     BridgeTransportError,
+    BRIDGE_METHODS,
     inspect_connection_record,
     load_connection_record,
 )
@@ -68,6 +69,10 @@ def test_bridge_config_is_loopback_only() -> None:
     assert BridgeConfig(host="127.0.0.1").host == "127.0.0.1"
     with pytest.raises(ValueError):
         BridgeConfig(host="192.0.2.1")
+
+
+def test_bridge_allow_list_includes_typed_load_operations() -> None:
+    assert {"load", "boundary_condition"}.issubset(BRIDGE_METHODS)
 
 
 def test_windows_pid_check_uses_read_only_helper_not_os_kill(monkeypatch) -> None:
