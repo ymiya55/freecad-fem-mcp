@@ -177,6 +177,19 @@ class QProcessJobRegistry:
                     return job.summary()
         return None
 
+    def wait(self, job_id: str, timeout_ms: int = 50) -> None:
+        """Give a native QProcess a bounded wait turn for headless FreeCADCmd."""
+        if not isinstance(timeout_ms, int) or not 1 <= timeout_ms <= 1000:
+            raise JobError("wait timeout is invalid")
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise JobError("job not found")
+            process = job.process
+        waiter = getattr(process, "waitForFinished", None) if process is not None else None
+        if callable(waiter):
+            waiter(timeout_ms)
+
     def list(self) -> List[Dict[str, Any]]:
         with self._lock:
             return [job.summary() for job in list(self._jobs.values())[-self.max_jobs:]]
