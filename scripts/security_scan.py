@@ -91,6 +91,7 @@ SECRET_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
         "credential-like literal must be supplied through environment/configuration",
     ),
 )
+SECRET_RULE_NAMES = frozenset(rule for rule, _, _ in SECRET_RULES)
 
 TEXT_SUFFIXES = {
     ".py",
@@ -166,7 +167,11 @@ def scan_file(path: Path, root: Path, max_bytes: int = 4 * 1024 * 1024) -> list[
             if pattern.search(line):
                 if rule == "generic-secret-assignment" and _is_placeholder_secret(line):
                     continue
-                findings.append(Finding(relative, number, rule, message, original.strip()[:240]))
+                # Never echo a credential-shaped line into CI logs or JSON
+                # artifacts.  Reviewers still get the file, line, and rule so
+                # they can rotate/remove the material safely.
+                snippet = "[redacted secret-like content]" if rule in SECRET_RULE_NAMES else original.strip()[:240]
+                findings.append(Finding(relative, number, rule, message, snippet))
     return findings
 
 

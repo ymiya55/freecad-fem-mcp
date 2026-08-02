@@ -21,8 +21,10 @@ def test_static_scan_detects_forbidden_constructs(tmp_path: Path) -> None:
 def test_static_scan_detects_secret_shapes(tmp_path: Path) -> None:
     sample = tmp_path / "secrets.env"
     sample.write_text("AWS=AKIA1234567890ABCDEF\n", encoding="utf-8")
-    rules = {finding.rule for finding in scan_file(sample, tmp_path)}
+    findings = scan_file(sample, tmp_path)
+    rules = {finding.rule for finding in findings}
     assert "aws-access-key" in rules
+    assert all("AKIA" not in finding.snippet for finding in findings)
 
 
 def test_static_scan_allows_official_freecad_validation_helpers(tmp_path: Path) -> None:
