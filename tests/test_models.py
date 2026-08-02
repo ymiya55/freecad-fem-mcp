@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from freecad_fem_mcp.models import (
     AddBoundaryConditionRequest,
     AnalysisRequest,
+    AmplitudePoint,
     ConstraintRequest,
     AddLoadRequest,
     AddRemoteDisplacementRequest,
@@ -304,3 +305,121 @@ def test_path_controls_are_not_arbitrary_commands() -> None:
         from freecad_fem_mcp.models import OpenRequest
 
         OpenRequest(path="bad\x00path")
+
+
+def test_bounded_amplitude_requires_ordered_finite_samples() -> None:
+    amplitude = [AmplitudePoint(time_s=0.0, scale=0.0), AmplitudePoint(time_s=1.0, scale=1.0)]
+    load = AddLoadRequest(
+        analysis_id="Analysis",
+        load_type="force",
+        force_n=10.0,
+        amplitude=amplitude,
+    )
+    assert load.amplitude == amplitude
+
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="force",
+            force_n=10.0,
+            amplitude=[
+                {"time_s": 0.1, "scale": 0.0},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="force",
+            force_n=10.0,
+            amplitude=[
+                {"time_s": 0.0, "scale": 0.0},
+                {"time_s": 0.0, "scale": 1.0},
+            ],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="force",
+            force_n=10.0,
+            amplitude=[{"time_s": 0.0, "scale": 0.0}],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="force",
+            force_n=10.0,
+            amplitude=[
+                {"time_s": 0.0, "scale": 0.0},
+                {"time_s": 1e12 + 1.0, "scale": 1.0},
+            ],
+        )
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type="force",
+            force_n=10.0,
+            amplitude=[
+                {"time_s": 0.0, "scale": 0.0},
+                {"time_s": 1.0, "scale": 1e9 + 1.0},
+            ],
+        )
+    with pytest.raises(ValidationError):
+        AmplitudePoint(time_s=0.0, scale=0.0, name="not-allowed")
+
+
+def test_amplitude_is_gated_to_supported_loads_and_boundaries() -> None:
+    amplitude = [
+        {"time_s": 0.0, "scale": 0.0},
+        {"time_s": 1.0, "scale": 1.0},
+    ]
+    # Existing non-amplitude load types remain available for their established
+    # contracts, but cannot opt into this bounded amplitude feature.
+    unsupported = {
+        "gravity": {"acceleration_m_s2": [0.0, -9.81, 0.0]},
+        "acceleration": {"acceleration_m_s2": [0.0, 1.25, 0.0]},
+        "centrifugal": {
+            "rotation_frequency_hz": 60.0,
+            "axis": {"object_name": "Rotor", "subelements": ["Edge1"]},
+        },
+    }
+    for load_type, values in unsupported.items():
+        with pytest.raises(ValidationError):
+            AddLoadRequest(
+                analysis_id="Analysis",
+                load_type=load_type,
+                amplitude=amplitude,
+                **values,
+            )
+
+    displacement = AddBoundaryConditionRequest(
+        analysis_id="Analysis",
+        boundary_type="displacement",
+        displacement_m=[0.0, 0.001, 0.0],
+        amplitude=amplitude,
+    )
+    assert displacement.amplitude is not None
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(
+            analysis_id="Analysis",
+            boundary_type="fixed",
+            amplitude=amplitude,
+        )
+
+    targets = [EntityRef(object_name="Bracket", subelements=["Face1"])]
+    remote_load = AddRemoteLoadRequest(
+        analysis_id="Analysis",
+        targets=targets,
+        reference_point_m=[0.0, 0.0, 0.0],
+        force_n=[100.0, 0.0, 0.0],
+        amplitude=amplitude,
+    )
+    assert remote_load.amplitude is not None
+    remote_displacement = AddRemoteDisplacementRequest(
+        analysis_id="Analysis",
+        targets=targets,
+        reference_point_m=[0.0, 0.0, 0.0],
+        translation_m=[0.0, None, None],
+        amplitude=amplitude,
+    )
+    assert remote_displacement.amplitude is not None

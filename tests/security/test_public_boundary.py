@@ -107,6 +107,222 @@ def test_typed_load_and_boundary_requests_reject_extra_or_nonfinite_values() -> 
         )
 
 
+# Amplitudes are deliberately represented as plain mappings at the public
+# boundary. The service validates the same shape again before any native
+# operation is called; keeping this fixture here makes both checks exercise
+# exactly the same contract.
+_VALID_AMPLITUDE = [
+    {"time_s": 0.0, "scale": 1.0},
+    {"time_s": 1.0, "scale": 0.5},
+]
+
+
+def _public_amplitude_cases() -> tuple[tuple[type[object], dict[str, object]], ...]:
+    target = {"object_name": "Geometry", "subelements": ["Face1"]}
+    return (
+        (
+            AddLoadRequest,
+            {
+                "analysis_id": "Analysis",
+                "load_type": "force",
+                "force_n": 1.0,
+            },
+        ),
+        (
+            AddLoadRequest,
+            {
+                "analysis_id": "Analysis",
+                "load_type": "pressure",
+                "pressure_pa": 1.0,
+            },
+        ),
+        (
+            AddBoundaryConditionRequest,
+            {
+                "analysis_id": "Analysis",
+                "boundary_type": "displacement",
+                "displacement_m": [0.0, 0.0, 0.001],
+            },
+        ),
+        (
+            AddRemoteLoadRequest,
+            {
+                "analysis_id": "Analysis",
+                "targets": [target],
+                "reference_point_m": [0.0, 0.0, 0.0],
+                "force_n": [1.0, 0.0, 0.0],
+            },
+        ),
+        (
+            AddRemoteDisplacementRequest,
+            {
+                "analysis_id": "Analysis",
+                "targets": [target],
+                "reference_point_m": [0.0, 0.0, 0.0],
+                "translation_m": [0.001, 0.0, 0.0],
+                "rotation_rad": None,
+            },
+        ),
+    )
+
+
+def test_public_amplitude_is_optional_and_allowed_on_supported_requests() -> None:
+    for model_type, params in _public_amplitude_cases():
+        model = model_type(**params, amplitude=_VALID_AMPLITUDE)
+        assert model.model_dump()["amplitude"] == _VALID_AMPLITUDE
+
+    endpoint_amplitude = [
+        {"time_s": 0.0, "scale": -1e9},
+        {"time_s": 1e12, "scale": 1e9},
+    ]
+    model = AddLoadRequest(
+        analysis_id="Analysis",
+        load_type="force",
+        force_n=1.0,
+        amplitude=endpoint_amplitude,
+    )
+    assert model.model_dump()["amplitude"] == endpoint_amplitude
+
+    # Omitting the optional field keeps existing request forms valid.
+    for model_type, params in _public_amplitude_cases():
+        assert model_type(**params).model_dump().get("amplitude") is None
+
+
+@pytest.mark.parametrize(
+    "label,value",
+    [
+        ("empty", []),
+        ("one_point", [{"time_s": 0.0, "scale": 1.0}]),
+        (
+            "first_time_not_zero",
+            [{"time_s": 0.1, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "duplicate_time",
+            [{"time_s": 0.0, "scale": 1.0}, {"time_s": 0.0, "scale": 0.5}],
+        ),
+        (
+            "decreasing_time",
+            [{"time_s": 0.0, "scale": 1.0}, {"time_s": 2.0, "scale": 0.5}, {"time_s": 1.0, "scale": 0.5}],
+        ),
+        (
+            "negative_time",
+            [{"time_s": -0.1, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "time_above_limit",
+            [{"time_s": 0.0, "scale": 1.0}, {"time_s": 1e12 + 1.0, "scale": 1.0}],
+        ),
+        (
+            "scale_above_limit",
+            [{"time_s": 0.0, "scale": 1e9 + 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "scale_below_limit",
+            [{"time_s": 0.0, "scale": -1e9 - 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "time_string",
+            [{"time_s": "0.0", "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "scale_string",
+            [{"time_s": 0.0, "scale": "1.0"}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "time_bool",
+            [{"time_s": True, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "scale_bool",
+            [{"time_s": 0.0, "scale": False}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "time_nan",
+            [{"time_s": math.nan, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "scale_nan",
+            [{"time_s": 0.0, "scale": math.nan}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "time_inf",
+            [{"time_s": math.inf, "scale": 1.0}, {"time_s": 2.0, "scale": 1.0}],
+        ),
+        (
+            "scale_inf",
+            [{"time_s": 0.0, "scale": math.inf}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "nested_extra",
+            [
+                {"time_s": 0.0, "scale": 1.0, "metadata": {"source": "x"}},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
+        ),
+        (
+            "arbitrary_name",
+            [
+                {"time_s": 0.0, "scale": 1.0, "name": "Ramp"},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
+        ),
+        (
+            "arbitrary_kind",
+            [
+                {"time_s": 0.0, "scale": 1.0, "kind": "step"},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
+        ),
+        ("wrong_nested_shape", [[0.0, 1.0], [1.0, 1.0]]),
+        (
+            "too_many_points",
+            [{"time_s": float(index), "scale": 1.0} for index in range(257)],
+        ),
+    ],
+)
+def test_public_amplitude_rejects_malformed_values(
+    label: str, value: list[object]
+) -> None:
+    del label  # The case label is only for readable pytest failure output.
+    for model_type, params in _public_amplitude_cases():
+        with pytest.raises(ValidationError):
+            model_type(**params, amplitude=value)
+
+
+@pytest.mark.parametrize(
+    "load_type,payload",
+    [
+        ("gravity", {"acceleration_m_s2": [0.0, -9.81, 0.0]}),
+        ("acceleration", {"acceleration_m_s2": [0.0, -9.81, 0.0]}),
+        (
+            "centrifugal",
+            {
+                "rotation_frequency_hz": 10.0,
+                "axis": {"object_name": "Axis", "subelements": ["Edge1"]},
+            },
+        ),
+    ],
+)
+def test_public_amplitude_is_rejected_for_unsupported_load_types(
+    load_type: str, payload: dict[str, object]
+) -> None:
+    with pytest.raises(ValidationError):
+        AddLoadRequest(
+            analysis_id="Analysis",
+            load_type=load_type,
+            amplitude=_VALID_AMPLITUDE,
+            **payload,
+        )
+
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(
+            analysis_id="Analysis",
+            boundary_type="fixed",
+            amplitude=_VALID_AMPLITUDE,
+        )
+
+
 def test_public_numeric_limits_remain_bounded() -> None:
     with pytest.raises(ValidationError):
         CreateMeshRequest(analysis_id="A", element_size_mm=math.inf)
@@ -457,6 +673,244 @@ def _service() -> tuple[FEMService, _RecordingOperations]:
         pipeline=object(),
     )
     return service, operations
+
+
+def _addon_supported_amplitude_cases() -> tuple[tuple[str, dict[str, object], str], ...]:
+    return (
+        (
+            "load",
+            {
+                "action": "add",
+                "analysis_id": "Analysis",
+                "load_type": "force",
+                "force_n": 10.0,
+                "targets": [],
+            },
+            "calls",
+        ),
+        (
+            "load",
+            {
+                "action": "add",
+                "analysis_id": "Analysis",
+                "load_type": "pressure",
+                "pressure_pa": 10.0,
+                "targets": [],
+            },
+            "calls",
+        ),
+        (
+            "boundary_condition",
+            {
+                "action": "add",
+                "analysis_id": "Analysis",
+                "boundary_type": "displacement",
+                "displacement_m": [0.0, 0.0, 0.001],
+                "targets": [],
+            },
+            "calls",
+        ),
+        (
+            "remote_load",
+            _remote_request_params(),
+            "remote_calls",
+        ),
+        (
+            "remote_displacement",
+            _remote_displacement_request_params(),
+            "remote_displacement_calls",
+        ),
+    )
+
+
+def test_addon_accepts_amplitude_on_supported_routes_and_forwards_it() -> None:
+    service, operations = _service()
+    for request_id, (method, params, call_attr) in enumerate(
+        _addon_supported_amplitude_cases(), start=200
+    ):
+        params = dict(params)
+        params["amplitude"] = _VALID_AMPLITUDE
+        result = service(Request(request_id, method, params))
+        assert result
+
+        calls = getattr(operations, call_attr)
+        if call_attr == "calls":
+            forwarded = calls[-1][2]
+        else:
+            forwarded = calls[-1][0][1]
+        assert forwarded["amplitude"] == _VALID_AMPLITUDE
+
+
+@pytest.mark.parametrize(
+    "label,value",
+    [
+        ("empty", []),
+        ("one_point", [{"time_s": 0.0, "scale": 1.0}]),
+        (
+            "first_time_not_zero",
+            [{"time_s": 0.1, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "duplicate_time",
+            [{"time_s": 0.0, "scale": 1.0}, {"time_s": 0.0, "scale": 0.5}],
+        ),
+        (
+            "decreasing_time",
+            [
+                {"time_s": 0.0, "scale": 1.0},
+                {"time_s": 2.0, "scale": 0.5},
+                {"time_s": 1.0, "scale": 0.5},
+            ],
+        ),
+        (
+            "negative_time",
+            [{"time_s": -0.1, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "time_above_limit",
+            [{"time_s": 0.0, "scale": 1.0}, {"time_s": 1e12 + 1.0, "scale": 1.0}],
+        ),
+        (
+            "scale_above_limit",
+            [{"time_s": 0.0, "scale": 1e9 + 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "scale_below_limit",
+            [{"time_s": 0.0, "scale": -1e9 - 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "time_string",
+            [{"time_s": "0.0", "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "scale_string",
+            [{"time_s": 0.0, "scale": "1.0"}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "time_bool",
+            [{"time_s": True, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "scale_bool",
+            [{"time_s": 0.0, "scale": False}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "time_nan",
+            [{"time_s": math.nan, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "scale_nan",
+            [{"time_s": 0.0, "scale": math.nan}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "time_inf",
+            [{"time_s": math.inf, "scale": 1.0}, {"time_s": 2.0, "scale": 1.0}],
+        ),
+        (
+            "scale_inf",
+            [{"time_s": 0.0, "scale": math.inf}, {"time_s": 1.0, "scale": 1.0}],
+        ),
+        (
+            "nested_extra",
+            [
+                {"time_s": 0.0, "scale": 1.0, "metadata": {"source": "x"}},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
+        ),
+        (
+            "arbitrary_name",
+            [
+                {"time_s": 0.0, "scale": 1.0, "name": "Ramp"},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
+        ),
+        (
+            "arbitrary_kind",
+            [
+                {"time_s": 0.0, "scale": 1.0, "kind": "step"},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
+        ),
+        ("wrong_nested_shape", [[0.0, 1.0], [1.0, 1.0]]),
+        (
+            "too_many_points",
+            [{"time_s": float(index), "scale": 1.0} for index in range(257)],
+        ),
+    ],
+)
+def test_addon_rejects_bad_amplitude_before_dispatch(label: str, value: list[object]) -> None:
+    del label
+    service, operations = _service()
+    for request_id, (method, params, call_attr) in enumerate(
+        _addon_supported_amplitude_cases(), start=300
+    ):
+        params = dict(params)
+        params["amplitude"] = value
+        calls = getattr(operations, call_attr)
+        before = len(calls)
+        with pytest.raises(ServiceError):
+            service(Request(request_id, method, params))
+        assert len(calls) == before
+
+
+def test_addon_rejects_amplitude_for_unsupported_routes_before_dispatch() -> None:
+    unsupported = (
+        (
+            "load",
+            {
+                "action": "add",
+                "analysis_id": "Analysis",
+                "load_type": "gravity",
+                "acceleration_m_s2": [0.0, -9.81, 0.0],
+                "targets": [],
+                "amplitude": _VALID_AMPLITUDE,
+            },
+            "calls",
+        ),
+        (
+            "load",
+            {
+                "action": "add",
+                "analysis_id": "Analysis",
+                "load_type": "acceleration",
+                "acceleration_m_s2": [0.0, -9.81, 0.0],
+                "targets": [],
+                "amplitude": _VALID_AMPLITUDE,
+            },
+            "calls",
+        ),
+        (
+            "load",
+            {
+                "action": "add",
+                "analysis_id": "Analysis",
+                "load_type": "centrifugal",
+                "rotation_frequency_hz": 10.0,
+                "axis": {"object_name": "Axis", "subelements": ["Edge1"]},
+                "targets": [],
+                "amplitude": _VALID_AMPLITUDE,
+            },
+            "centrifugal_calls",
+        ),
+        (
+            "boundary_condition",
+            {
+                "action": "add",
+                "analysis_id": "Analysis",
+                "boundary_type": "fixed",
+                "targets": [],
+                "amplitude": _VALID_AMPLITUDE,
+            },
+            "calls",
+        ),
+    )
+    service, operations = _service()
+    for request_id, (method, params, call_attr) in enumerate(unsupported, start=400):
+        calls = getattr(operations, call_attr)
+        before = len(calls)
+        with pytest.raises(ServiceError):
+            service(Request(request_id, method, params))
+        assert len(calls) == before
 
 
 def test_addon_revalidates_typed_load_requests() -> None:

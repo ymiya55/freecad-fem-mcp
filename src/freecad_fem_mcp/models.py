@@ -223,6 +223,61 @@ class EntityRef(StrictModel):
     )
 
 
+class AmplitudePoint(StrictModel):
+    """One bounded CalculiX amplitude sample.
+
+    The wire format intentionally stays as a closed object with no name,
+    kind, or extrapolation escape hatches.  Times are expressed in seconds
+    and scales are dimensionless multipliers.
+    """
+
+    time_s: Annotated[
+        StrictFloat,
+        Field(ge=0.0, le=1e12),
+        AfterValidator(_finite),
+    ]
+    scale: Annotated[
+        StrictFloat,
+        Field(ge=-1e9, le=1e9),
+        AfterValidator(_finite),
+    ]
+
+
+Amplitude = Annotated[
+    list[AmplitudePoint],
+    Field(
+        min_length=2,
+        max_length=256,
+        description=(
+            "At least two samples with the first time_s exactly 0.0 and "
+            "strictly increasing finite times."
+        ),
+    ),
+]
+
+
+class _AmplitudeRequestModel(StrictModel):
+    """Shared optional amplitude field and sequence validation."""
+
+    amplitude: Amplitude | None = None
+
+    @field_validator("amplitude")
+    @classmethod
+    def validate_amplitude_sequence(
+        cls, value: list[AmplitudePoint] | None
+    ) -> list[AmplitudePoint] | None:
+        if value is None:
+            return None
+        if value[0].time_s != 0.0:
+            raise ValueError("amplitude first time_s must be exactly 0.0")
+        previous = value[0].time_s
+        for point in value[1:]:
+            if point.time_s <= previous:
+                raise ValueError("amplitude time_s values must be strictly increasing")
+            previous = point.time_s
+        return value
+
+
 class ConstraintRequest(StrictModel):
     document_id: BoundedText | None = None
     analysis_id: BoundedText
@@ -346,7 +401,7 @@ class AddConstraintRequest(StrictModel):
     selfweight_acceleration_m_s2: ValueList = Field(default_factory=list)
 
 
-class AddLoadRequest(StrictModel):
+class AddLoadRequest(_AmplitudeRequestModel):
     """Add one typed SI load while rejecting unrelated value fields."""
 
     document_id: BoundedText | None = None
@@ -391,6 +446,8 @@ class AddLoadRequest(StrictModel):
 
     @model_validator(mode="after")
     def validate_load_values(self) -> "AddLoadRequest":
+        if self.amplitude is not None and self.load_type not in {"force", "pressure"}:
+            raise ValueError("amplitude is supported only for force and pressure loads")
         if self.load_type == "force":
             if self.force_n is None:
                 raise ValueError("force_n is required for load_type='force'")
@@ -456,7 +513,7 @@ class AddLoadRequest(StrictModel):
         return self
 
 
-class AddRemoteLoadRequest(StrictModel):
+class AddRemoteLoadRequest(_AmplitudeRequestModel):
     """Add a global remote force/moment load at a bounded reference point."""
 
     document_id: BoundedText | None = None
@@ -515,7 +572,7 @@ class AddRemoteLoadRequest(StrictModel):
         return self
 
 
-class AddRemoteDisplacementRequest(StrictModel):
+class AddRemoteDisplacementRequest(_AmplitudeRequestModel):
     """Add a global rigid-body displacement/rotation at a reference point."""
 
     document_id: BoundedText | None = None
@@ -587,7 +644,7 @@ class AddRemoteDisplacementRequest(StrictModel):
         return self
 
 
-class AddBoundaryConditionRequest(StrictModel):
+class AddBoundaryConditionRequest(_AmplitudeRequestModel):
     """Add a fixed or prescribed-displacement boundary condition."""
 
     document_id: BoundedText | None = None
@@ -613,6 +670,8 @@ class AddBoundaryConditionRequest(StrictModel):
         if self.boundary_type == "fixed":
             if self.displacement_m is not None:
                 raise ValueError("displacement_m is not valid for boundary_type='fixed'")
+            if self.amplitude is not None:
+                raise ValueError("amplitude is not valid for boundary_type='fixed'")
         elif self.displacement_m is None:
             raise ValueError("displacement_m is required for boundary_type='displacement'")
         return self

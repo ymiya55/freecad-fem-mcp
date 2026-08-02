@@ -600,6 +600,39 @@ class FEMService:
         return result
 
     @classmethod
+    def _validate_amplitude(cls, value: Any) -> Optional[list[dict[str, float]]]:
+        """Validate a bounded, strict CalculiX amplitude sequence.
+
+        The local addon bridge is a trust boundary in addition to the MCP
+        request models.  Keep the wire shape closed and normalize all values
+        to finite floats before forwarding them to native operations.
+        """
+
+        if value is None:
+            return None
+        if not isinstance(value, list) or not 2 <= len(value) <= 256:
+            raise ServiceError("amplitude must contain between 2 and 256 points")
+
+        points: list[dict[str, float]] = []
+        previous_time: Optional[float] = None
+        for index, point in enumerate(value):
+            if not isinstance(point, Mapping) or set(point) != {"time_s", "scale"}:
+                raise ServiceError("amplitude point must contain exactly time_s and scale")
+            time_s = cls._finite_value(point["time_s"], "amplitude time_s", strict_numeric=True)
+            scale = cls._finite_value(point["scale"], "amplitude scale", strict_numeric=True)
+            if not 0.0 <= time_s <= 1e12:
+                raise ServiceError("amplitude time_s is outside the allowed range")
+            if abs(scale) > 1e9:
+                raise ServiceError("amplitude scale is outside the allowed range")
+            if index == 0 and time_s != 0.0:
+                raise ServiceError("amplitude first time_s must be exactly 0.0")
+            if previous_time is not None and time_s <= previous_time:
+                raise ServiceError("amplitude time_s values must be strictly increasing")
+            points.append({"time_s": time_s, "scale": scale})
+            previous_time = time_s
+        return points
+
+    @classmethod
     def _compat_scalar(cls, value: Any, name: str) -> float:
         if isinstance(value, (list, tuple)):
             if not value:
@@ -642,6 +675,8 @@ class FEMService:
             "centrifugal": "rotation_frequency_hz",
         }[load_type]
         allowed = {"action", "document_id", "analysis_id", "targets", "load_type", value_key}
+        if load_type in {"force", "pressure"}:
+            allowed.add("amplitude")
         if load_type == "centrifugal":
             allowed.update({"axis", "force_n", "pressure_pa", "acceleration_m_s2"})
         self._validate_fields(params, allowed, {"action", "analysis_id", "load_type", value_key})
@@ -662,6 +697,8 @@ class FEMService:
             if isinstance(value, (list, tuple)) or isinstance(value, bool):
                 raise ServiceError("{} must be a finite scalar".format(value_key))
             self._finite_value(value, value_key, strict_numeric=True)
+        if "amplitude" in params:
+            self._validate_amplitude(params["amplitude"])
         return load_type
 
     def _require_centrifugal_request(self, params: Mapping[str, Any]) -> None:
@@ -740,6 +777,7 @@ class FEMService:
         required = {"action", "analysis_id", "boundary_type"}
         if boundary_type == "displacement":
             allowed.add("displacement_m")
+            allowed.add("amplitude")
             required.add("displacement_m")
         self._validate_fields(params, allowed, required)
         self._require_identifier(params, "analysis_id")
@@ -749,6 +787,8 @@ class FEMService:
             raise ServiceError("targets must be a bounded list")
         if boundary_type == "displacement":
             self._finite_vector(params["displacement_m"], "displacement_m", strict_numeric=True)
+            if "amplitude" in params:
+                self._validate_amplitude(params["amplitude"])
         return boundary_type
 
     def _validate_remote_load_request(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -756,7 +796,7 @@ class FEMService:
 
         allowed = {
             "action", "document_id", "analysis_id", "targets", "reference_point_m",
-            "force_n", "moment_n_m",
+            "force_n", "moment_n_m", "amplitude",
         }
         self._validate_fields(
             params,
@@ -829,6 +869,10 @@ class FEMService:
             nonzero = nonzero or any(component != 0.0 for component in vector)
         if not nonzero:
             raise ServiceError("force_n or moment_n_m must contain a non-zero component")
+        if "amplitude" in params:
+            amplitude = self._validate_amplitude(params["amplitude"])
+            if amplitude is not None:
+                data["amplitude"] = amplitude
         return data
 
     def _validate_remote_displacement_request(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -836,7 +880,7 @@ class FEMService:
 
         allowed = {
             "action", "document_id", "analysis_id", "targets", "reference_point_m",
-            "translation_m", "rotation_rad",
+            "translation_m", "rotation_rad", "amplitude",
         }
         self._validate_fields(
             params,
@@ -908,6 +952,10 @@ class FEMService:
             data[key] = vector
         if not constrained:
             raise ServiceError("translation_m or rotation_rad must constrain a component")
+        if "amplitude" in params:
+            amplitude = self._validate_amplitude(params["amplitude"])
+            if amplitude is not None:
+                data["amplitude"] = amplitude
         return data
 
     def _constraint_data(self, params: Mapping[str, Any], kind: Any, *, strict: bool) -> dict[str, Any]:
@@ -919,6 +967,8 @@ class FEMService:
         """
         if strict:
             if kind == "centrifugal":
+                if "amplitude" in params:
+                    raise ServiceError("amplitude is unsupported for centrifugal loads")
                 targets = params.get("targets", [])
                 references = [] if not targets else self._references(targets, strict_targets=True)
                 axis = self._references([params["axis"]], strict_targets=True)
@@ -947,8 +997,16 @@ class FEMService:
             elif kind == "displacement":
                 displacement = self._finite_vector(params["displacement_m"], "displacement_m", strict_numeric=True)
                 data.update({"x": displacement[0], "y": displacement[1], "z": displacement[2], "xFree": False, "yFree": False, "zFree": False})
+            if "amplitude" in params:
+                if kind not in {"force", "pressure", "displacement"}:
+                    raise ServiceError("amplitude is unsupported for this constraint kind")
+                amplitude = self._validate_amplitude(params["amplitude"])
+                if amplitude is not None:
+                    data["amplitude"] = amplitude
             return data
 
+        if "amplitude" in params:
+            raise ServiceError("amplitude is unsupported for the compatibility constraint route")
         targets = self._compat_targets(params)
         # Even the compatibility route accepts only the public EntityRef
         # shape for nested targets.  The legacy aliases below remain supported,

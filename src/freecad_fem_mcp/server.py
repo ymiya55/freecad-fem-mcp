@@ -38,6 +38,7 @@ from .models import (
     AddLoadRequest,
     AddRemoteDisplacementRequest,
     AddRemoteLoadRequest,
+    Amplitude,
     AssignMaterialRequest,
     BoundedPath,
     BoundedText,
@@ -432,8 +433,9 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             "Add a typed SI load. Use force_n for force, pressure_pa for pressure, "
             "exactly three acceleration_m_s2 components for gravity or arbitrary "
             "acceleration, or rotation_frequency_hz plus one EdgeN axis reference "
-            "for centrifugal load. Targets may be empty to use the current GUI "
-            "selection (or all elements for centrifugal load)."
+            "for centrifugal load. Optional amplitude is a bounded time/scale "
+            "table and is supported only for force and pressure. Targets may be "
+            "empty to use the current GUI selection (or all elements for centrifugal load)."
         ),
         annotations=ann(readonly=False, destructive=False),
     )
@@ -457,6 +459,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         acceleration_m_s2: Vector3 | None = None,
         rotation_frequency_hz: CentrifugalFrequencyHz | None = None,
         axis: EntityRef | None = None,
+        amplitude: Amplitude | None = None,
     ) -> Any:
         request = AddLoadRequest(
             analysis_id=analysis_id,
@@ -468,6 +471,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             acceleration_m_s2=acceleration_m_s2,
             rotation_frequency_hz=rotation_frequency_hz,
             axis=axis,
+            amplitude=amplitude,
         )
         return await invoke("load", "add", request)
 
@@ -477,7 +481,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             "Add a remote global force and/or moment at a reference point. Targets "
             "must identify at least one coupled region; reference_point_m is in "
             "global meters, force_n in global newtons, and moment_n_m in global "
-            "newton-meters. At least one load vector must be non-zero."
+            "newton-meters. Optional amplitude is a bounded time/scale table. "
+            "At least one load vector must be non-zero."
         ),
         annotations=ann(readonly=False, destructive=False),
     )
@@ -498,6 +503,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         document_id: BoundedText | None = None,
         force_n: RemoteLoadVector3 | None = None,
         moment_n_m: RemoteLoadVector3 | None = None,
+        amplitude: Amplitude | None = None,
     ) -> Any:
         request = AddRemoteLoadRequest(
             analysis_id=analysis_id,
@@ -506,6 +512,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             document_id=document_id,
             force_n=force_n,
             moment_n_m=moment_n_m,
+            amplitude=amplitude,
         )
         return await invoke("remote_load", "add", request)
 
@@ -516,7 +523,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             "Targets must identify at least one coupled region; reference_point_m "
             "is in global meters, translation_m in global meters, and rotation_rad "
             "in global radians. Each numeric component constrains that DOF (including "
-            "zero); null means Free. At least one component must be numeric."
+            "zero); null means Free. Optional amplitude is a bounded time/scale "
+            "table. At least one component must be numeric."
         ),
         annotations=ann(readonly=False, destructive=False),
     )
@@ -537,6 +545,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         document_id: BoundedText | None = None,
         translation_m: RemoteDisplacementVector3 | None = None,
         rotation_rad: RemoteRotationVector3 | None = None,
+        amplitude: Amplitude | None = None,
     ) -> Any:
         request = AddRemoteDisplacementRequest(
             analysis_id=analysis_id,
@@ -545,6 +554,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             document_id=document_id,
             translation_m=translation_m,
             rotation_rad=rotation_rad,
+            amplitude=amplitude,
         )
         return await invoke("remote_displacement", "add", request)
 
@@ -553,7 +563,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         description=(
             "Add a fixed or prescribed-displacement boundary condition. Fixed "
             "conditions take no displacement; displacement requires exactly three "
-            "displacement_m components in meters. Targets may be empty to use the "
+            "displacement_m components in meters. Optional amplitude is supported "
+            "only for prescribed displacement. Targets may be empty to use the "
             "current GUI selection."
         ),
         annotations=ann(readonly=False, destructive=False),
@@ -574,6 +585,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         ]
         | None = None,
         displacement_m: Vector3 | None = None,
+        amplitude: Amplitude | None = None,
     ) -> Any:
         request = AddBoundaryConditionRequest(
             analysis_id=analysis_id,
@@ -581,6 +593,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             document_id=document_id,
             targets=targets or [],
             displacement_m=displacement_m,
+            amplitude=amplitude,
         )
         return await invoke("boundary_condition", "add", request)
 

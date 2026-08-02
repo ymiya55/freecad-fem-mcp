@@ -299,12 +299,85 @@ class FreeCADOperations:
     def _unit_value(value: Any, unit: str, name: str) -> str:
         return "{} {}".format(_finite_number(value, name), unit)
 
+    @staticmethod
+    def _normalize_amplitude(value: Any) -> Optional[list[tuple[float, float]]]:
+        """Validate and normalize a public amplitude sequence.
+
+        Amplitudes are deliberately handled at the native operation boundary
+        rather than copied onto the object as a client-provided property.  A
+        strict list/object/numeric shape here keeps direct addon callers on
+        the same contract as the MCP models and leaves only canonical
+        ``(time_s, scale)`` pairs for native property assignment.
+        """
+
+        if value is None:
+            return None
+        if not isinstance(value, list) or not 2 <= len(value) <= 256:
+            raise OperationError("amplitude must contain between 2 and 256 points")
+
+        points: list[tuple[float, float]] = []
+        previous_time: Optional[float] = None
+        for index, point in enumerate(value):
+            if not isinstance(point, Mapping) or set(point) != {"time_s", "scale"}:
+                raise OperationError("amplitude point must contain exactly time_s and scale")
+            raw_time = point["time_s"]
+            raw_scale = point["scale"]
+            if isinstance(raw_time, bool) or not isinstance(raw_time, (int, float)):
+                raise OperationError("amplitude time_s must be numeric")
+            if isinstance(raw_scale, bool) or not isinstance(raw_scale, (int, float)):
+                raise OperationError("amplitude scale must be numeric")
+            try:
+                time_s = float(raw_time)
+                scale = float(raw_scale)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise OperationError("amplitude point must be numeric") from exc
+            if not math.isfinite(time_s) or not 0.0 <= time_s <= 1e12:
+                raise OperationError("amplitude time_s is outside the allowed range")
+            if not math.isfinite(scale) or abs(scale) > 1e9:
+                raise OperationError("amplitude scale is outside the allowed range")
+            if index == 0 and time_s != 0.0:
+                raise OperationError("amplitude first time_s must be exactly 0.0")
+            if previous_time is not None and time_s <= previous_time:
+                raise OperationError("amplitude time_s values must be strictly increasing")
+            points.append((time_s, scale))
+            previous_time = time_s
+        return points
+
+    @classmethod
+    def _apply_amplitude(cls, obj: Any, amplitude: list[tuple[float, float]]) -> None:
+        """Attach a validated amplitude to a native FEM object.
+
+        FreeCAD exposes these fields only on load/constraint objects that
+        support amplitudes.  Missing fields are an operation error, allowing
+        the surrounding transaction to abort before the object is added to
+        the analysis.  The wire values are formatted exactly as CalculiX's
+        ``time, scale`` amplitude rows and never pass through as client
+        strings.
+        """
+
+        if not hasattr(obj, "EnableAmplitude") or not hasattr(obj, "AmplitudeValues"):
+            raise OperationError("native object does not support amplitudes")
+        rows = [
+            format(time_s, ".17g") + ", " + format(scale, ".17g")
+            for time_s, scale in amplitude
+        ]
+        try:
+            setattr(obj, "EnableAmplitude", True)
+            setattr(obj, "AmplitudeValues", rows)
+        except Exception as exc:
+            raise OperationError("native amplitude properties are unavailable") from exc
+
     def add_constraint(self, analysis: str, kind: str, params: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         doc = self._document()
         analysis_obj = self._find(doc, analysis)
         if kind not in _CONSTRAINT_TYPES:
             raise OperationError("unsupported constraint kind")
         data = dict(params or {})
+        amplitude_present = "amplitude" in data
+        amplitude = data.pop("amplitude", None)
+        if amplitude_present and kind not in {"force", "pressure", "displacement"}:
+            raise OperationError("amplitude is unsupported for this constraint kind")
+        normalized_amplitude = self._normalize_amplitude(amplitude)
         name = _safe_name(data.pop("name", "Constraint_" + kind), "Constraint_" + kind)
         raw_references = data.pop("references", data.pop("refs", None))
         # FreeCAD 1.1's ConstraintSelfWeight is a global load object and does
@@ -355,6 +428,8 @@ class FreeCADOperations:
                     obj.GravityAcceleration = self._unit_value(data["gravity_acceleration"], "m/s^2", "gravity_acceleration")
                 if "gravity_direction" in data:
                     obj.GravityDirection = self._vector(data["gravity_direction"])
+            if normalized_amplitude is not None:
+                self._apply_amplitude(obj, normalized_amplitude)
             self._add_to_analysis(analysis_obj, obj)
         return {"name": self._object_id(obj), "kind": kind}
 
@@ -460,6 +535,7 @@ class FreeCADOperations:
         analysis_obj = self._find(doc, analysis)
         if not isinstance(params, Mapping):
             raise OperationError("remote load parameters must be an object")
+        normalized_amplitude = self._normalize_amplitude(params.get("amplitude"))
         raw_references = params.get("references")
         references = self._references(doc, raw_references)
         self._validate_remote_references(references)
@@ -487,6 +563,8 @@ class FreeCADOperations:
             for axis, component in zip(force_axes, moment_n_m):
                 setattr(obj, "Moment" + axis, self._unit_value(component, "N*m", "moment_n_m"))
                 setattr(obj, "RotationalMode" + axis, "Load" if component != 0.0 else "Free")
+            if normalized_amplitude is not None:
+                self._apply_amplitude(obj, normalized_amplitude)
             self._add_to_analysis(analysis_obj, obj)
         return {"name": self._object_id(obj), "kind": "remote_load"}
 
@@ -549,6 +627,7 @@ class FreeCADOperations:
         analysis_obj = self._find(doc, analysis)
         if not isinstance(params, Mapping):
             raise OperationError("remote displacement parameters must be an object")
+        normalized_amplitude = self._normalize_amplitude(params.get("amplitude"))
         references = self._references(doc, params.get("references"))
         self._validate_remote_references(references)
         reference_point_m = self._remote_vector(params, "reference_point_m", 1e9, required=True)
@@ -572,6 +651,8 @@ class FreeCADOperations:
                 setattr(obj, "TranslationalMode" + axis, "Constraint" if component is not None else "Free")
             for axis, component in zip(("X", "Y", "Z"), rotation_rad):
                 setattr(obj, "RotationalMode" + axis, "Constraint" if component is not None else "Free")
+            if normalized_amplitude is not None:
+                self._apply_amplitude(obj, normalized_amplitude)
             self._add_to_analysis(analysis_obj, obj)
         return {"name": self._object_id(obj), "kind": "remote_displacement"}
 
@@ -632,6 +713,8 @@ class FreeCADOperations:
         analysis_obj = self._find(doc, analysis)
         if not isinstance(params, Mapping):
             raise OperationError("centrifugal load parameters must be an object")
+        if "amplitude" in params:
+            raise OperationError("amplitude is unsupported for centrifugal loads")
         raw_references = params.get("references", [])
         references = [] if raw_references == [] else self._references(doc, raw_references)
         self._validate_centrifugal_bodies(references)

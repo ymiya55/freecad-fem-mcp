@@ -107,6 +107,11 @@ remote displacementは`add_remote_displacement`を使います。`translation_m`
 指定する必要があります。遠心力は`add_load`の`centrifugal`を使い、周波数はHz、
 軸は実在する直線`EdgeN`を1本、対象は`SolidN`または全要素を表す空配列で指定します。
 
+force、pressure、displacement、remote load / displacementには`amplitude`を指定できます。
+点列は2〜256点、先頭の`time_s`は0.0、以後は厳密増加、`scale`は無次元です。FreeCADの
+文字列プロパティは直接指定せず、MCPが検証済み点列から生成します。独立LoadCaseや
+複数解析StepはFreeCAD 1.1.3のnative writerにないため、現在は公開していません。
+
 拘束対象を明示的に呼ぶ場合、`targets`の要素は次の形です。`object_id`ではなく`object_name`を使用します。
 
 ```json

@@ -427,6 +427,59 @@ def test_typed_routes_reject_wrong_values_and_extra_fields() -> None:
         }))
 
 
+def test_amplitude_route_contract_and_forwarding() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        def __init__(self):
+            self.calls = []
+
+        def add_constraint(self, analysis, kind, params):
+            self.calls.append((analysis, kind, params))
+            return {"name": "Native_" + kind}
+
+    operations = _Operations()
+    service = FEMService(operations=operations, selection=_Selection())
+    service(Request(10, "load", {
+        "action": "add", "analysis_id": "Analysis", "load_type": "force",
+        "force_n": 10.0, "targets": [{"object_name": "Beam", "subelements": ["Face1"]}],
+        "amplitude": [{"time_s": 0.0, "scale": 0.0}, {"time_s": 1.0, "scale": 1.5}],
+    }))
+    assert operations.calls[-1][2]["amplitude"] == [
+        {"time_s": 0.0, "scale": 0.0}, {"time_s": 1.0, "scale": 1.5}
+    ]
+
+    bad_amplitudes = (
+        [{"time_s": 1.0, "scale": 1.0}, {"time_s": 2.0, "scale": 1.0}],
+        [{"time_s": 0.0, "scale": 1.0, "extra": 0}, {"time_s": 1.0, "scale": 1.0}],
+        [{"time_s": 0.0, "scale": 1.0}, {"time_s": 0.0, "scale": 1.0}],
+    )
+    for amplitude in bad_amplitudes:
+        with pytest.raises(ServiceError):
+            service(Request(11, "load", {
+                "action": "add", "analysis_id": "Analysis", "load_type": "force",
+                "force_n": 10.0, "amplitude": amplitude,
+            }))
+    with pytest.raises(ServiceError):
+        service(Request(12, "load", {
+            "action": "add", "analysis_id": "Analysis", "load_type": "gravity",
+            "acceleration_m_s2": [0.0, 9.81, 0.0],
+            "amplitude": [{"time_s": 0.0, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        }))
+    with pytest.raises(ServiceError):
+        service(Request(13, "boundary_condition", {
+            "action": "add", "analysis_id": "Analysis", "boundary_type": "fixed",
+            "amplitude": [{"time_s": 0.0, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+        }))
+
+
 def test_gravity_rejects_zero_acceleration_vector() -> None:
     class _Selection:
         gui = None

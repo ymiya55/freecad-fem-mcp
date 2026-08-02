@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "addon"))
 
 from FreeCADFEMMCP.operations import FreeCADOperations, OperationError  # noqa: E402
@@ -15,6 +17,7 @@ class _NativeDisplacement:
         "Name", "Label", "TypeId", "References",
         "xFree", "yFree", "zFree",
         "xDisplacement", "yDisplacement", "zDisplacement",
+        "EnableAmplitude", "AmplitudeValues",
     }
 
     def __setattr__(self, name, value):
@@ -25,6 +28,8 @@ class _NativeDisplacement:
     def __init__(self, name: str):
         self.Name, self.Label, self.TypeId = name, name, "Fem::ConstraintDisplacement"
         self.References = []
+        self.EnableAmplitude = False
+        self.AmplitudeValues = []
 
 
 class _Analysis:
@@ -105,6 +110,18 @@ class _ObjectsFem:
         return _NativeDisplacement(name)
 
 
+class _NativeDisplacementWithoutAmplitude(_NativeDisplacement):
+    def __init__(self, name: str):
+        self.Name, self.Label, self.TypeId = name, name, "Fem::ConstraintDisplacement"
+        self.References = []
+
+
+class _ObjectsFemWithoutAmplitude(_ObjectsFem):
+    @staticmethod
+    def makeConstraintDisplacement(_doc, name):
+        return _NativeDisplacementWithoutAmplitude(name)
+
+
 class _NativeSelfWeight:
     _allowed = {"Name", "Label", "TypeId", "GravityAcceleration", "GravityDirection"}
 
@@ -129,6 +146,7 @@ class _NativeRigidBody:
         "TranslationalModeX", "TranslationalModeY", "TranslationalModeZ",
         "RotationalModeX", "RotationalModeY", "RotationalModeZ",
         "ForceX", "ForceY", "ForceZ", "MomentX", "MomentY", "MomentZ",
+        "EnableAmplitude", "AmplitudeValues",
     }
 
     def __setattr__(self, name, value):
@@ -139,6 +157,8 @@ class _NativeRigidBody:
     def __init__(self, name: str):
         self.Name, self.Label, self.TypeId = name, name, "Fem::ConstraintRigidBody"
         self.References = []
+        self.EnableAmplitude = False
+        self.AmplitudeValues = []
 
 
 class _ObjectsFemWithRigidBody(_ObjectsFem):
@@ -193,6 +213,44 @@ def test_displacement_uses_freecad_11_native_property_names() -> None:
     assert not hasattr(native, "z")
 
 
+def test_amplitude_is_written_as_native_calculix_rows() -> None:
+    app = _App()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFem)
+    operations.add_constraint(
+        "Analysis",
+        "displacement",
+        {
+            "references": [{"object": "Geometry", "sub_element": "Face1"}],
+            "x": 0.1,
+            "xFree": False,
+            "amplitude": [
+                {"time_s": 0.0, "scale": 1.0},
+                {"time_s": 0.25, "scale": -0.5},
+            ],
+        },
+    )
+    native = next(item for item in app.ActiveDocument.analysis.Group if item.TypeId == "Fem::ConstraintDisplacement")
+    assert native.EnableAmplitude is True
+    assert native.AmplitudeValues == ["0, 1", "0.25, -0.5"]
+
+
+def test_amplitude_requires_native_properties_and_does_not_add_object() -> None:
+    app = _App()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithoutAmplitude)
+    with pytest.raises(OperationError):
+        operations.add_constraint(
+            "Analysis",
+            "displacement",
+            {
+                "references": [{"object": "Geometry", "sub_element": "Face1"}],
+                "x": 0.1,
+                "xFree": False,
+                "amplitude": [{"time_s": 0.0, "scale": 1.0}, {"time_s": 1.0, "scale": 1.0}],
+            },
+        )
+    assert not app.ActiveDocument.analysis.Group
+
+
 def test_selfweight_is_global_and_does_not_require_references() -> None:
     app = _App()
     app.Vector = lambda x, y, z: (x, y, z)
@@ -244,6 +302,24 @@ def test_remote_load_maps_si_vectors_to_native_rigid_body_properties() -> None:
     assert (native.MomentX, native.MomentY, native.MomentZ) == (
         "0.0 N*m", "0.0 N*m", "2.5 N*m"
     )
+
+
+def test_remote_load_maps_amplitude_rows() -> None:
+    app = _App()
+    app.Vector = lambda x, y, z: (x, y, z)
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithRigidBody)
+    operations.add_remote_load(
+        "Analysis",
+        {
+            "references": [{"object": "Geometry", "sub_element": "Face1"}],
+            "reference_point_m": [0.0, 0.0, 0.0],
+            "force_n": [1.0, 0.0, 0.0],
+            "amplitude": [{"time_s": 0.0, "scale": 0.0}, {"time_s": 2.0, "scale": 1.25}],
+        },
+    )
+    native = next(item for item in app.ActiveDocument.analysis.Group if item.TypeId == "Fem::ConstraintRigidBody")
+    assert native.EnableAmplitude is True
+    assert native.AmplitudeValues == ["0, 0", "2, 1.25"]
 
 
 def test_remote_load_rejects_stale_or_mismatched_native_subelements() -> None:

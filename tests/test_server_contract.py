@@ -100,6 +100,10 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
             load_type="force",
             force_n=10.0,
             targets=[{"object_name": "Cantilever", "subelements": ["Face1"]}],
+            amplitude=[
+                {"time_s": 0.0, "scale": 0.0},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
         )
     )
     remote_fn = getattr(tools["add_remote_load"], "fn", tools["add_remote_load"])
@@ -109,6 +113,10 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
             targets=[{"object_name": "Cantilever", "subelements": ["Face1"]}],
             reference_point_m=[0.0, 0.0, 0.0],
             force_n=[10.0, 0.0, 0.0],
+            amplitude=[
+                {"time_s": 0.0, "scale": 0.0},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
         )
     )
     remote_displacement_fn = getattr(
@@ -121,6 +129,10 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
             reference_point_m=[0.0, 0.0, 0.0],
             translation_m=[0.0, None, None],
             rotation_rad=[None, None, None],
+            amplitude=[
+                {"time_s": 0.0, "scale": 0.0},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
         )
     )
     boundary_fn = getattr(tools["add_boundary_condition"], "fn", tools["add_boundary_condition"])
@@ -129,6 +141,10 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
             analysis_id="Analysis",
             boundary_type="displacement",
             displacement_m=[0.0, 0.0, 0.001],
+            amplitude=[
+                {"time_s": 0.0, "scale": 0.0},
+                {"time_s": 1.0, "scale": 1.0},
+            ],
         )
     )
 
@@ -136,18 +152,25 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
     assert client.calls[0][1]["action"] == "add"
     assert client.calls[0][1]["load_type"] == "force"
     assert client.calls[0][1]["force_n"] == 10.0
+    assert client.calls[0][1]["amplitude"] == [
+        {"time_s": 0.0, "scale": 0.0},
+        {"time_s": 1.0, "scale": 1.0},
+    ]
     assert PUBLIC_TOOL_ACTIONS["add_remote_load"] == ("remote_load", "add")
     assert client.calls[1][0] == "remote_load"
     assert client.calls[1][1]["action"] == "add"
     assert client.calls[1][1]["reference_point_m"] == [0.0, 0.0, 0.0]
     assert client.calls[1][1]["force_n"] == [10.0, 0.0, 0.0]
+    assert client.calls[1][1]["amplitude"] == client.calls[0][1]["amplitude"]
     assert PUBLIC_TOOL_ACTIONS["add_remote_displacement"] == ("remote_displacement", "add")
     assert client.calls[2][0] == "remote_displacement"
     assert client.calls[2][1]["action"] == "add"
     assert client.calls[2][1]["translation_m"] == [0.0, None, None]
+    assert client.calls[2][1]["amplitude"] == client.calls[0][1]["amplitude"]
     assert client.calls[3][0] == "boundary_condition"
     assert client.calls[3][1]["action"] == "add"
     assert client.calls[3][1]["boundary_type"] == "displacement"
+    assert client.calls[3][1]["amplitude"] == client.calls[0][1]["amplitude"]
 
     with pytest.raises(ValidationError):
         asyncio.run(
@@ -169,6 +192,15 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
     assert frequency_schema["maximum"] == 1e9
     axis_schema = load_schema["properties"]["axis"]["anyOf"][0]
     assert "EntityRef" in axis_schema["$ref"]
+    amplitude_schema = load_schema["properties"]["amplitude"]["anyOf"][0]
+    assert amplitude_schema["minItems"] == 2
+    assert amplitude_schema["maxItems"] == 256
+    amplitude_point_schema = load_schema["$defs"]["AmplitudePoint"]
+    assert amplitude_point_schema["additionalProperties"] is False
+    assert amplitude_point_schema["properties"]["time_s"]["minimum"] == 0.0
+    assert amplitude_point_schema["properties"]["time_s"]["maximum"] == 1e12
+    assert amplitude_point_schema["properties"]["scale"]["minimum"] == -1e9
+    assert amplitude_point_schema["properties"]["scale"]["maximum"] == 1e9
 
     remote_schema = getattr(tools["add_remote_load"], "parameters", {})
     assert remote_schema["additionalProperties"] is False
@@ -187,6 +219,8 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
     assert translation_schema["items"]["anyOf"][0]["le"] == 1e9
     rotation_schema = remote_displacement_schema["properties"]["rotation_rad"]["anyOf"][0]
     assert rotation_schema["items"]["anyOf"][0]["le"] == 1e6
+    assert remote_schema["properties"]["amplitude"]
+    assert remote_displacement_schema["properties"]["amplitude"]
     assert "force_n" not in remote_displacement_schema["properties"]
     assert "coordinate_system" not in remote_displacement_schema["properties"]
 
