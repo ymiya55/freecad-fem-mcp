@@ -13,9 +13,12 @@ MCPクライアント、モデル生成入力、FCStd内のLabel/メタデータ
 - トークン比較は一定時間方式で行います。
 - トークンはMCP結果・ログ・例外へ出しません。
 - 接続レコードはユーザーのLocalAppDataに原子的に書き込みます。
+- 接続レコードのPIDを読み取り専用APIで確認し、終了済みFreeCADを指すレコードを拒否します。
+- transport失敗時の接続レコード更新は1回だけに制限し、新しいendpointとトークンへ安全に再接続します。
 - NDJSONは1フレーム、キュー、ログ、画像、文字列、配列に上限があります。
 - 重複JSONキー、NaN/Infinity、未知フィールド、未知method/actionを拒否します。
 - 全FreeCAD操作はmethod allowlistと型付きパラメーターを通ります。
+- Gmsh/CalculiXログはUTF-8置換デコード、サイズ制限、制御文字除去、資格情報redactionを通ります。
 
 ## 禁止機能
 

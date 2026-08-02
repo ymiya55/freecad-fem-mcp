@@ -6,6 +6,7 @@ trusted executable paths configured by the addon and never invokes a shell.
 
 from __future__ import annotations
 
+import re
 import secrets
 import threading
 import time
@@ -37,6 +38,38 @@ class JobError(RuntimeError):
     pass
 
 
+_MAX_DIAGNOSTIC_BYTES = 2048
+_SECRET_DIAGNOSTIC = re.compile(r"(?i)(token|secret|password|credential)\s*([:=])\s*[^\s,;]+")
+
+
+def _clip_utf8(value: str, maximum: int) -> str:
+    raw = value.encode("utf-8", "replace")
+    if len(raw) <= maximum:
+        return value
+    return raw[-maximum:].decode("utf-8", "ignore")
+
+
+def _safe_diagnostic(value: Any) -> str:
+    text = str(value).replace("\x00", "�")
+    text = "".join(character if character in "\r\n\t" or ord(character) >= 0x20 else "�" for character in text)
+    text = _SECRET_DIAGNOSTIC.sub(lambda match: "{}{}[redacted]".format(match.group(1), match.group(2)), text)
+    return _clip_utf8(text, _MAX_DIAGNOSTIC_BYTES)
+
+
+def _decode_process_bytes(value: Any) -> str:
+    """Decode QByteArray/bytes output without Python ``b'...'`` repr leakage."""
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raw = bytes(value)
+    else:
+        try:
+            raw = bytes(value)
+        except (TypeError, ValueError):
+            raw = str(value).encode("utf-8", "replace")
+    return _safe_diagnostic(raw.decode("utf-8", "replace"))
+
+
 @dataclass
 class Job:
     id: str
@@ -56,7 +89,8 @@ class Job:
             "id": self.id, "kind": self.kind, "state": self.state,
             "started_at": self.started_at, "finished_at": self.finished_at,
             "exit_code": self.exit_code, "output": self.output[-32768:],
-            "error": self.error, "artifacts": dict(self.artifacts),
+            "error": _safe_diagnostic(self.error) if self.error else None,
+            "artifacts": dict(self.artifacts),
         }
 
 
@@ -106,20 +140,27 @@ class QProcessJobRegistry:
                     pass
 
             def output() -> None:
-                reader = getattr(process, "readAllStandardOutput", None)
-                if callable(reader):
-                    data = reader()
-                    if isinstance(data, bytes):
-                        text = data.decode("utf-8", "replace")
-                    else:
-                        text = str(data)
-                    job.output = (job.output + text)[-self.max_output:]
+                chunks = []
+                for reader_name in ("readAllStandardOutput", "readAllStandardError"):
+                    reader = getattr(process, reader_name, None)
+                    if callable(reader):
+                        try:
+                            chunks.append(_decode_process_bytes(reader()))
+                        except (AttributeError, RuntimeError, TypeError, ValueError):
+                            continue
+                if chunks:
+                    job.output = _clip_utf8(job.output + "".join(chunks), self.max_output)
 
             ready = getattr(process, "readyReadStandardOutput", None)
             if ready is not None and hasattr(ready, "connect"):
                 ready.connect(output)
+            ready_error = getattr(process, "readyReadStandardError", None)
+            if ready_error is not None and hasattr(ready_error, "connect"):
+                ready_error.connect(output)
 
             def finalize() -> None:
+                if job.state == "cancelled":
+                    return
                 output()
                 code = getattr(process, "exitCode", lambda: 0)()
                 job.exit_code = int(code)
@@ -147,7 +188,7 @@ class QProcessJobRegistry:
                 raise JobError("native tool did not expose run()")
             runner(False)
         except Exception as exc:
-            job.state, job.error, job.finished_at = "failed", str(exc), time.time()
+            job.state, job.error, job.finished_at = "failed", _safe_diagnostic(exc), time.time()
         return job
 
     def start_gmsh(self, mesh_object: Any) -> Dict[str, Any]:
@@ -199,15 +240,36 @@ class QProcessJobRegistry:
             job = self._jobs.get(job_id)
             if job is None:
                 raise JobError("job not found")
-            if job.state in {"queued", "running"} and job.process is not None:
-                killer = getattr(job.process, "kill", None)
-                if callable(killer):
-                    killer()
-                else:
-                    terminator = getattr(job.process, "terminate", None)
+            if job.state == "queued":
+                job.state = "cancelled"
+                job.finished_at = time.time()
+            elif job.state == "running":
+                # Mark cancelled before signaling QProcess so a synchronous
+                # finished callback cannot turn a user cancellation into
+                # completed/failed.
+                job.state = "cancelled"
+                process = job.process
+                terminator = getattr(process, "terminate", None) if process is not None else None
+                killer = getattr(process, "kill", None) if process is not None else None
+                try:
                     if callable(terminator):
                         terminator()
-                job.state = "cancelled"
+                        waiter = getattr(process, "waitForFinished", None)
+                        state_getter = getattr(process, "state", None)
+                        still_running = False
+                        if callable(waiter):
+                            waiter(100)
+                        if callable(state_getter):
+                            try:
+                                still_running = bool(state_getter())
+                            except Exception:
+                                still_running = False
+                        if still_running and callable(killer):
+                            killer()
+                    elif callable(killer):
+                        killer()
+                except Exception as exc:
+                    job.error = _safe_diagnostic(exc)
                 job.finished_at = time.time()
             return job.summary()
 
