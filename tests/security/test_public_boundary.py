@@ -25,6 +25,7 @@ from freecad_fem_mcp.models import (  # noqa: E402
     AddLoadRequest,
     AddRemoteLoadRequest,
     AddRemoteDisplacementRequest,
+    CreateAnalysisRequest,
     CreateMeshRequest,
     GetResultsRequest,
     PUBLIC_REQUEST_MODELS,
@@ -321,6 +322,143 @@ def test_public_amplitude_is_rejected_for_unsupported_load_types(
             boundary_type="fixed",
             amplitude=_VALID_AMPLITUDE,
         )
+
+
+def test_public_create_analysis_accepts_three_closed_analysis_modes() -> None:
+    static = CreateAnalysisRequest()
+    assert static.analysis_type == "static"
+
+    frequency_without_limits = CreateAnalysisRequest(
+        analysis_type="frequency",
+        eigenmodes_count=1,
+    )
+    assert frequency_without_limits.analysis_type == "frequency"
+
+    frequency_at_limits = CreateAnalysisRequest(
+        analysis_type="frequency",
+        eigenmodes_count=100,
+        frequency_low_hz=0.0,
+        frequency_high_hz=1e9,
+    )
+    assert frequency_at_limits.frequency_high_hz == 1e9
+
+    buckling = CreateAnalysisRequest(
+        analysis_type="buckling",
+        buckling_factors=100,
+        buckling_accuracy=1.0,
+    )
+    assert buckling.buckling_factors == 100
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"analysis_type": "frequency"},
+        {"analysis_type": "frequency", "eigenmodes_count": 1, "frequency_low_hz": 0.0},
+        {"analysis_type": "frequency", "eigenmodes_count": 1, "frequency_high_hz": 1.0},
+        {
+            "analysis_type": "frequency",
+            "eigenmodes_count": 1,
+            "frequency_low_hz": 10.0,
+            "frequency_high_hz": 10.0,
+        },
+        {
+            "analysis_type": "frequency",
+            "eigenmodes_count": 1,
+            "frequency_low_hz": 11.0,
+            "frequency_high_hz": 10.0,
+        },
+        {"analysis_type": "buckling"},
+        {"analysis_type": "buckling", "buckling_factors": 1},
+        {"analysis_type": "buckling", "buckling_accuracy": 0.1},
+        {
+            "analysis_type": "static",
+            "eigenmodes_count": 1,
+            "frequency_low_hz": 0.0,
+            "frequency_high_hz": 1.0,
+            "buckling_factors": 1,
+            "buckling_accuracy": 0.1,
+        },
+        {
+            "analysis_type": "frequency",
+            "eigenmodes_count": 1,
+            "buckling_factors": 1,
+            "buckling_accuracy": 0.1,
+        },
+        {
+            "analysis_type": "buckling",
+            "buckling_factors": 1,
+            "buckling_accuracy": 0.1,
+            "eigenmodes_count": 1,
+        },
+        {"analysis_type": "modal"},
+        {"analysis_type": True},
+        {"analysis_type": "static", "action": "__import__('os').system('whoami')"},
+        {"analysis_type": "static", "code": "exec(1)"},
+    ],
+)
+def test_public_create_analysis_rejects_missing_modes_and_unrelated_fields(
+    params: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(**params)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("eigenmodes_count", 0),
+        ("eigenmodes_count", 101),
+        ("eigenmodes_count", -1),
+        ("eigenmodes_count", True),
+        ("eigenmodes_count", 1.0),
+        ("eigenmodes_count", "10"),
+        ("frequency_low_hz", -0.1),
+        ("frequency_low_hz", 1e9 + 0.1),
+        ("frequency_low_hz", True),
+        ("frequency_low_hz", "1 Hz"),
+        ("frequency_low_hz", math.nan),
+        ("frequency_low_hz", math.inf),
+        ("frequency_high_hz", -0.1),
+        ("frequency_high_hz", 1e9 + 0.1),
+        ("frequency_high_hz", False),
+        ("frequency_high_hz", "1 Hz"),
+        ("frequency_high_hz", math.nan),
+        ("frequency_high_hz", math.inf),
+        ("buckling_factors", 0),
+        ("buckling_factors", 101),
+        ("buckling_factors", -1),
+        ("buckling_factors", False),
+        ("buckling_factors", 1.0),
+        ("buckling_factors", "10"),
+        ("buckling_accuracy", 0.0),
+        ("buckling_accuracy", -0.1),
+        ("buckling_accuracy", 1.1),
+        ("buckling_accuracy", True),
+        ("buckling_accuracy", "0.1"),
+        ("buckling_accuracy", math.nan),
+        ("buckling_accuracy", math.inf),
+    ],
+)
+def test_public_create_analysis_rejects_bad_numeric_fields(field: str, value: object) -> None:
+    if field.startswith("eigen"):
+        params: dict[str, object] = {"analysis_type": "frequency", "eigenmodes_count": 1}
+    elif field.startswith("frequency"):
+        params = {
+            "analysis_type": "frequency",
+            "eigenmodes_count": 1,
+            "frequency_low_hz": 0.0,
+            "frequency_high_hz": 1.0,
+        }
+    else:
+        params = {
+            "analysis_type": "buckling",
+            "buckling_factors": 1,
+            "buckling_accuracy": 0.1,
+        }
+    params[field] = value
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(**params)
 
 
 def test_public_numeric_limits_remain_bounded() -> None:
@@ -631,6 +769,7 @@ class _RecordingOperations:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, object]]] = []
+        self.analysis_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self.remote_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self.remote_displacement_calls: list[
             tuple[tuple[object, ...], dict[str, object]]
@@ -640,6 +779,16 @@ class _RecordingOperations:
     def add_constraint(self, analysis_id: str, kind: str, data: dict[str, object]) -> dict[str, str]:
         self.calls.append((analysis_id, kind, data))
         return {"name": "Constraint"}
+
+    def create_analysis(self, *args: object, **kwargs: object) -> dict[str, object]:
+        self.analysis_calls.append((args, kwargs))
+        name = kwargs.get("name")
+        if name is None and args:
+            name = args[0]
+        return {
+            "name": name or "Analysis",
+            "analysis_type": kwargs.get("analysis_type", "static"),
+        }
 
     def add_remote_load(self, *args: object, **kwargs: object) -> dict[str, str]:
         self.remote_calls.append((args, kwargs))
@@ -673,6 +822,179 @@ def _service() -> tuple[FEMService, _RecordingOperations]:
         pipeline=object(),
     )
     return service, operations
+
+
+def _addon_analysis_params(analysis_type: str) -> dict[str, object]:
+    params: dict[str, object] = {
+        "action": "create",
+        "analysis_type": analysis_type,
+        "solver": "SolverCalculiX",
+    }
+    if analysis_type == "frequency":
+        params.update(
+            {
+                "eigenmodes_count": 10,
+                "frequency_low_hz": 0.0,
+                "frequency_high_hz": 1e9,
+            }
+        )
+    elif analysis_type == "buckling":
+        params.update({"buckling_factors": 10, "buckling_accuracy": 0.01})
+    return params
+
+
+def _analysis_call_payload(call: tuple[tuple[object, ...], dict[str, object]]) -> dict[str, object]:
+    args, kwargs = call
+    payload = dict(kwargs)
+    if args:
+        payload.setdefault("name", args[0])
+    if len(args) > 1:
+        payload.setdefault("analysis_type", args[1])
+    return payload
+
+
+def test_addon_accepts_three_analysis_modes_and_forwards_typed_values() -> None:
+    service, operations = _service()
+    for request_id, analysis_type in enumerate(("static", "frequency", "buckling"), start=500):
+        params = _addon_analysis_params(analysis_type)
+        before = len(operations.analysis_calls)
+        result = service(Request(request_id, "analysis", params))
+        assert result["analysis_id"] == "Analysis"
+        assert len(operations.analysis_calls) == before + 1
+        forwarded = _analysis_call_payload(operations.analysis_calls[-1])
+        assert forwarded.get("analysis_type", "static") == analysis_type
+        if analysis_type == "frequency":
+            assert forwarded.get("eigenmodes_count") == 10
+            assert forwarded.get("frequency_low_hz") == 0.0
+            assert forwarded.get("frequency_high_hz") == 1e9
+        elif analysis_type == "buckling":
+            assert forwarded.get("buckling_factors") == 10
+            assert forwarded.get("buckling_accuracy") == 0.01
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"action": "create", "analysis_type": "frequency"},
+        {
+            "action": "create",
+            "analysis_type": "frequency",
+            "eigenmodes_count": 1,
+            "frequency_low_hz": 0.0,
+        },
+        {
+            "action": "create",
+            "analysis_type": "frequency",
+            "eigenmodes_count": 1,
+            "frequency_high_hz": 1.0,
+        },
+        {
+            "action": "create",
+            "analysis_type": "frequency",
+            "eigenmodes_count": 1,
+            "frequency_low_hz": 10.0,
+            "frequency_high_hz": 10.0,
+        },
+        {
+            "action": "create",
+            "analysis_type": "frequency",
+            "eigenmodes_count": 1,
+            "frequency_low_hz": 11.0,
+            "frequency_high_hz": 10.0,
+        },
+        {"action": "create", "analysis_type": "buckling"},
+        {
+            "action": "create",
+            "analysis_type": "buckling",
+            "buckling_factors": 1,
+        },
+        {
+            "action": "create",
+            "analysis_type": "buckling",
+            "buckling_accuracy": 0.1,
+        },
+        {
+            "action": "create",
+            "analysis_type": "static",
+            "eigenmodes_count": 1,
+        },
+        {
+            "action": "create",
+            "analysis_type": "frequency",
+            "eigenmodes_count": 1,
+            "buckling_factors": 1,
+            "buckling_accuracy": 0.1,
+        },
+        {
+            "action": "create",
+            "analysis_type": "buckling",
+            "buckling_factors": 1,
+            "buckling_accuracy": 0.1,
+            "eigenmodes_count": 1,
+        },
+        {"action": "create", "analysis_type": "modal"},
+        {"action": "create", "analysis_type": True},
+        {"action": "create", "analysis_type": "static", "action_name": "create"},
+        {"action": "__import__", "analysis_type": "static"},
+        {"action": "create", "analysis_type": "static", "code": "exec(1)"},
+    ],
+)
+def test_addon_rejects_bad_analysis_requests_before_dispatch(
+    params: dict[str, object],
+) -> None:
+    service, operations = _service()
+    before = len(operations.analysis_calls)
+    with pytest.raises(ServiceError):
+        service(Request(550, "analysis", params))
+    assert len(operations.analysis_calls) == before
+
+
+@pytest.mark.parametrize(
+    "field,value,analysis_type",
+    [
+        ("eigenmodes_count", 0, "frequency"),
+        ("eigenmodes_count", 101, "frequency"),
+        ("eigenmodes_count", -1, "frequency"),
+        ("eigenmodes_count", True, "frequency"),
+        ("eigenmodes_count", 1.0, "frequency"),
+        ("eigenmodes_count", "10", "frequency"),
+        ("frequency_low_hz", -0.1, "frequency"),
+        ("frequency_low_hz", 1e9 + 0.1, "frequency"),
+        ("frequency_low_hz", True, "frequency"),
+        ("frequency_low_hz", "1 Hz", "frequency"),
+        ("frequency_low_hz", math.nan, "frequency"),
+        ("frequency_low_hz", math.inf, "frequency"),
+        ("frequency_high_hz", -0.1, "frequency"),
+        ("frequency_high_hz", 1e9 + 0.1, "frequency"),
+        ("frequency_high_hz", False, "frequency"),
+        ("frequency_high_hz", "1 Hz", "frequency"),
+        ("frequency_high_hz", math.nan, "frequency"),
+        ("frequency_high_hz", math.inf, "frequency"),
+        ("buckling_factors", 0, "buckling"),
+        ("buckling_factors", 101, "buckling"),
+        ("buckling_factors", -1, "buckling"),
+        ("buckling_factors", False, "buckling"),
+        ("buckling_factors", 1.0, "buckling"),
+        ("buckling_factors", "10", "buckling"),
+        ("buckling_accuracy", 0.0, "buckling"),
+        ("buckling_accuracy", -0.1, "buckling"),
+        ("buckling_accuracy", 1.1, "buckling"),
+        ("buckling_accuracy", True, "buckling"),
+        ("buckling_accuracy", "0.1", "buckling"),
+        ("buckling_accuracy", math.nan, "buckling"),
+        ("buckling_accuracy", math.inf, "buckling"),
+    ],
+)
+def test_addon_rejects_bad_analysis_numeric_fields_before_dispatch(
+    field: str, value: object, analysis_type: str,
+) -> None:
+    service, operations = _service()
+    params = _addon_analysis_params(analysis_type)
+    params[field] = value
+    before = len(operations.analysis_calls)
+    with pytest.raises(ServiceError):
+        service(Request(600, "analysis", params))
+    assert len(operations.analysis_calls) == before
 
 
 def _addon_supported_amplitude_cases() -> tuple[tuple[str, dict[str, object], str], ...]:
@@ -1574,6 +1896,18 @@ _ROUTE_CASES: tuple[tuple[tuple[str, str], dict[str, object]], ...] = (
     (("results", "get"), {"action": "get", "analysis_id": "Analysis"}),
     (("results", "show"), {"action": "show", "analysis_id": "Analysis"}),
 )
+
+
+def test_addon_status_advertises_all_analysis_types_and_route_parity() -> None:
+    service, _operations = _service()
+    status = service(Request(90, "status", {"action": "get"}))
+    assert set(status["capabilities"]["analysis_types"]) == {
+        "static",
+        "frequency",
+        "buckling",
+    }
+    assert len(_ROUTE_CASES) == 22
+    assert {pair for pair, _base in _ROUTE_CASES} == set(PUBLIC_TOOL_ACTIONS.values())
 
 
 @pytest.mark.parametrize("escape_field", ("code", "inp", "property", "property_name", "native_property"))

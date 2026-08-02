@@ -41,6 +41,33 @@ def test_bridge_client_sends_authenticated_single_ndjson_frame() -> None:
     assert "\n" not in transport.lines[0]
 
 
+def test_bridge_client_preserves_analysis_variant_controls() -> None:
+    def response(line: str) -> str:
+        request = json.loads(line)
+        assert request["method"] == "analysis"
+        assert request["params"] == {
+            "action": "create",
+            "analysis_type": "frequency",
+            "eigenmodes_count": 4,
+            "frequency_low_hz": 1.0,
+            "frequency_high_hz": 20.0,
+        }
+        return json.dumps({"id": request["id"], "result": {"name": "Analysis"}})
+
+    transport = FakeTransport(response)
+    result = BridgeClient(transport, token="secret-token").call(
+        "analysis",
+        {
+            "action": "create",
+            "analysis_type": "frequency",
+            "eigenmodes_count": 4,
+            "frequency_low_hz": 1.0,
+            "frequency_high_hz": 20.0,
+        },
+    )
+    assert result == {"name": "Analysis"}
+
+
 def test_bridge_client_rejects_unknown_methods_and_missing_auth() -> None:
     transport = FakeTransport(lambda _: "{}")
     with pytest.raises(BridgeProtocolError):

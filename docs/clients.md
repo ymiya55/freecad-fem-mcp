@@ -112,6 +112,12 @@ force、pressure、displacement、remote load / displacementには`amplitude`を
 文字列プロパティは直接指定せず、MCPが検証済み点列から生成します。独立LoadCaseや
 複数解析StepはFreeCAD 1.1.3のnative writerにないため、現在は公開していません。
 
+固有振動では`create_analysis`の`analysis_type`を`frequency`にし、
+`eigenmodes_count`を1〜100で指定します。`frequency_low_hz`と`frequency_high_hz`は
+両方指定または両方省略で、指定時は上限が下限より大きい必要があります。線形座屈では
+`analysis_type=buckling`、`buckling_factors`（1〜100）、`buckling_accuracy`（0より大きく
+1以下）を指定します。frequencyには密度、bucklingには支持と荷重が必要です。
+
 拘束対象を明示的に呼ぶ場合、`targets`の要素は次の形です。`object_id`ではなく`object_name`を使用します。
 
 ```json

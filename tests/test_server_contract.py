@@ -59,6 +59,45 @@ def test_tool_calls_cross_only_the_generic_bridge_boundary() -> None:
     assert client.calls[0][1]["action"] == "get"
 
 
+def test_create_analysis_variants_keep_one_tool_and_forward_controls() -> None:
+    client = FakeClient()
+    app = create_server(client)
+    tools = getattr(getattr(app, "_tool_manager", None), "_tools", None) or getattr(app, "_tools")
+    create_fn = getattr(tools["create_analysis"], "fn", tools["create_analysis"])
+
+    asyncio.run(
+        create_fn(
+            analysis_type="frequency",
+            eigenmodes_count=8,
+            frequency_low_hz=2.0,
+            frequency_high_hz=200.0,
+        )
+    )
+    assert client.calls[-1] == (
+        "analysis",
+        {
+            "action": "create",
+            "analysis_type": "frequency",
+            "eigenmodes_count": 8,
+            "frequency_low_hz": 2.0,
+            "frequency_high_hz": 200.0,
+            "solver": "SolverCalculiX",
+        },
+    )
+
+    asyncio.run(
+        create_fn(
+            analysis_type="buckling", buckling_factors=3, buckling_accuracy=0.05
+        )
+    )
+    assert client.calls[-1][1]["analysis_type"] == "buckling"
+    assert client.calls[-1][1]["buckling_factors"] == 3
+    assert client.calls[-1][1]["buckling_accuracy"] == 0.05
+
+    with pytest.raises(ValidationError):
+        asyncio.run(create_fn(analysis_type="frequency"))
+
+
 def test_add_constraint_targets_use_object_name_and_subelements() -> None:
     request = AddConstraintRequest(
         analysis_id="Analysis",

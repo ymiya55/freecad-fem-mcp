@@ -219,21 +219,191 @@ class FreeCADOperations:
         if isinstance(group, list):
             group.append(obj)
 
-    def create_analysis(self, name: str = "Analysis") -> Dict[str, Any]:
+    @staticmethod
+    def _strict_analysis_number(
+        value: Any, name: str, minimum: float, maximum: float
+    ) -> float:
+        """Validate an analysis control without coercing JSON strings/bools."""
+
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise OperationError("{} must be numeric".format(name))
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise OperationError("{} must be numeric".format(name)) from exc
+        if not math.isfinite(number) or not minimum <= number <= maximum:
+            raise OperationError("{} is outside the allowed range".format(name))
+        return number
+
+    @classmethod
+    def _analysis_options(
+        cls,
+        analysis_type: Any,
+        eigenmodes_count: Any = None,
+        frequency_low_hz: Any = None,
+        frequency_high_hz: Any = None,
+        buckling_factors: Any = None,
+        buckling_accuracy: Any = None,
+    ) -> dict[str, Any]:
+        """Validate and normalize the closed SolverCalculiX mode contract."""
+
+        if not isinstance(analysis_type, str) or analysis_type not in {"static", "frequency", "buckling"}:
+            raise OperationError("analysis_type is unsupported")
+
+        frequency_fields = (eigenmodes_count, frequency_low_hz, frequency_high_hz)
+        buckling_fields = (buckling_factors, buckling_accuracy)
+        if analysis_type == "static":
+            if any(value is not None for value in (*frequency_fields, *buckling_fields)):
+                raise OperationError("static analysis does not accept analysis-specific fields")
+        elif analysis_type == "frequency":
+            if isinstance(eigenmodes_count, bool) or not isinstance(eigenmodes_count, int):
+                raise OperationError("eigenmodes_count is required for frequency analysis")
+            if not 1 <= eigenmodes_count <= 100:
+                raise OperationError("eigenmodes_count is outside the allowed range")
+            if (frequency_low_hz is None) != (frequency_high_hz is None):
+                raise OperationError(
+                    "frequency_low_hz and frequency_high_hz must be provided together"
+                )
+            if any(value is not None for value in buckling_fields):
+                raise OperationError("frequency analysis does not accept buckling fields")
+            if frequency_low_hz is not None:
+                low = cls._strict_analysis_number(
+                    frequency_low_hz, "frequency_low_hz", 0.0, 1e9
+                )
+                high = cls._strict_analysis_number(
+                    frequency_high_hz, "frequency_high_hz", 0.0, 1e9
+                )
+                if high <= low:
+                    raise OperationError("frequency_high_hz must be greater than frequency_low_hz")
+            else:
+                # Native CalculiX uses zero limits when no frequency range is
+                # supplied.  Keep these explicit so every native mode has a
+                # deterministic setting.
+                low = high = 0.0
+        else:  # buckling
+            if isinstance(buckling_factors, bool) or not isinstance(buckling_factors, int):
+                raise OperationError("buckling_factors is required for buckling analysis")
+            if not 1 <= buckling_factors <= 100:
+                raise OperationError("buckling_factors is outside the allowed range")
+            accuracy = cls._strict_analysis_number(
+                buckling_accuracy, "buckling_accuracy", 0.0, 1.0
+            )
+            if accuracy <= 0.0:
+                raise OperationError("buckling_accuracy must be positive")
+            if any(value is not None for value in frequency_fields):
+                raise OperationError("buckling analysis does not accept frequency fields")
+
+        return {
+            "analysis_type": analysis_type,
+            "eigenmodes_count": eigenmodes_count,
+            "frequency_low_hz": low if analysis_type == "frequency" else None,
+            "frequency_high_hz": high if analysis_type == "frequency" else None,
+            "buckling_factors": buckling_factors if analysis_type == "buckling" else None,
+            "buckling_accuracy": accuracy if analysis_type == "buckling" else None,
+        }
+
+    @staticmethod
+    def _native_property_name(obj: Any, *names: str) -> str:
+        for name in names:
+            try:
+                if hasattr(obj, name):
+                    return name
+            except Exception:
+                # A native property lookup may raise for an unsupported
+                # alias; leave the loop to probe the next known spelling.
+                pass
+        raise OperationError("native solver property is unavailable: {}".format("/".join(names)))
+
+    @classmethod
+    def _set_native_required(cls, obj: Any, name: str, value: Any) -> None:
+        # Checking first is intentional: regular Python fakes allow arbitrary
+        # attributes, whereas native FreeCAD properties are a closed schema.
+        cls._native_property_name(obj, name)
+        try:
+            setattr(obj, name, value)
+        except Exception as exc:
+            raise OperationError("native solver property cannot be set: {}".format(name)) from exc
+
+    def _frequency_quantity(self, value: float) -> Any:
+        text = "{} Hz".format(format(value, ".17g"))
+        units = getattr(self.app, "Units", None)
+        quantity = getattr(units, "Quantity", None) if units is not None else None
+        if callable(quantity):
+            try:
+                return quantity(text)
+            except Exception:
+                # Test doubles and old FreeCAD versions may not expose a
+                # Quantity constructor; the native setter still accepts the
+                # unit-bearing string on those versions.
+                pass
+        return text
+
+    def create_analysis(
+        self,
+        name: str = "Analysis",
+        analysis_type: str = "static",
+        *,
+        eigenmodes_count: Any = None,
+        frequency_low_hz: Any = None,
+        frequency_high_hz: Any = None,
+        buckling_factors: Any = None,
+        buckling_accuracy: Any = None,
+    ) -> Dict[str, Any]:
         doc = self._document()
         safe = _safe_name(name, "Analysis")
+        options = self._analysis_options(
+            analysis_type,
+            eigenmodes_count,
+            frequency_low_hz,
+            frequency_high_hz,
+            buckling_factors,
+            buckling_accuracy,
+        )
         with self._transaction(doc, "Create FEM analysis"):
             analysis = self._new_object(doc, "Fem::FemAnalysis", safe, "makeAnalysis")
             # A public analysis always has a new CalculiX solver.  This avoids
             # accidental reuse of a stale/legacy solver object.
             solver = self._new_object(doc, "Fem::SolverCalculiX", "CalculiX", "makeSolverCalculiX")
-            for key, value in (("AnalysisType", "static"), ("GeometricalNonlinearity", "linear"), ("MaterialNonlinearity", "linear")):
+            # Required mode properties are set before the solver is attached
+            # to the analysis.  Any missing property or rejected value raises,
+            # and _transaction aborts the whole native operation.
+            self._set_native_required(solver, "AnalysisType", options["analysis_type"])
+            if options["analysis_type"] == "frequency":
+                self._set_native_required(
+                    solver, "EigenmodesCount", options["eigenmodes_count"]
+                )
+                low_name = self._native_property_name(
+                    solver, "EigenmodeLow", "EigenmodeLowLimit"
+                )
+                high_name = self._native_property_name(
+                    solver, "EigenmodeHigh", "EigenmodeHighLimit"
+                )
+                self._set_native_required(
+                    solver, low_name, self._frequency_quantity(options["frequency_low_hz"])
+                )
+                self._set_native_required(
+                    solver, high_name, self._frequency_quantity(options["frequency_high_hz"])
+                )
+            elif options["analysis_type"] == "buckling":
+                self._set_native_required(solver, "BucklingFactors", options["buckling_factors"])
+                self._set_native_required(solver, "BucklingAccuracy", options["buckling_accuracy"])
+
+            # These controls are present on current CalculiX objects but are
+            # not mode-specific.  Keep compatibility with older native builds
+            # by assigning them only when available.
+            for key, value in (("GeometricalNonlinearity", "linear"), ("MaterialNonlinearity", "linear")):
                 try:
-                    setattr(solver, key, value)
+                    if hasattr(solver, key):
+                        setattr(solver, key, value)
                 except Exception:
                     pass
             self._add_to_analysis(analysis, solver)
-        return {"name": self._object_id(analysis), "type": getattr(analysis, "TypeId", "Fem::FemAnalysis"), "solver": self._object_id(solver)}
+        return {
+            "name": self._object_id(analysis),
+            "type": getattr(analysis, "TypeId", "Fem::FemAnalysis"),
+            "solver": self._object_id(solver),
+            "analysis_type": options["analysis_type"],
+        }
 
     def set_material(self, analysis: str, material: Mapping[str, Any]) -> Dict[str, Any]:
         doc = self._document()
@@ -794,13 +964,113 @@ class FreeCADOperations:
             self._add_to_analysis(analysis_obj, solver)
         return {"name": self._object_id(solver), "type": getattr(solver, "TypeId", "Fem::SolverCalculiX"), "analysis_type": "static"}
 
-    def validate(self, analysis: str) -> Dict[str, Any]:
+    @staticmethod
+    def _material_has_density(obj: Any) -> bool:
+        """Return whether a native material object contains a finite density."""
+
+        values: list[Any] = []
+        material = getattr(obj, "Material", None)
+        if isinstance(material, Mapping):
+            for key, value in material.items():
+                if "density" in str(key).lower():
+                    values.append(value)
+        for key in ("Density", "density", "DensityValue", "density_kg_m3"):
+            try:
+                if hasattr(obj, key):
+                    values.append(getattr(obj, key))
+            except Exception:
+                pass
+        for value in values:
+            if isinstance(value, bool) or value is None:
+                continue
+            try:
+                # FreeCAD quantity strings start with the numeric magnitude
+                # (for example ``7850 kg/m^3``); plain numbers are accepted as
+                # well.  Do not require a particular unit spelling here.
+                number = float(str(value).strip().split()[0])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if math.isfinite(number) and number >= 0.0:
+                return True
+        return False
+
+    @classmethod
+    def _buckling_member_diagnostics(cls, members: list[Any]) -> list[str]:
+        """Require at least one support and one load for a buckling solve."""
+
+        has_support = False
+        has_load = False
+        for item in members:
+            type_id = str(getattr(item, "TypeId", ""))
+            semantic = cls.fem_type(item)
+            token = (semantic + " " + type_id).lower()
+            if "solvercalculix" in token or "femmesh" in token:
+                continue
+            is_rigid = "rigidbody" in token or "rigid_body" in token
+            if any(
+                marker in token
+                for marker in ("constraintfixed", "constraintdisplacement", "constraintcontact", "support")
+            ):
+                has_support = True
+            if is_rigid:
+                mode_values = " ".join(
+                    str(getattr(item, name, "")).lower()
+                    for name in (
+                        "TranslationalModeX", "TranslationalModeY", "TranslationalModeZ",
+                        "RotationalModeX", "RotationalModeY", "RotationalModeZ",
+                    )
+                )
+                if "load" in mode_values or not mode_values.strip():
+                    has_load = True
+                else:
+                    has_support = True
+            elif any(
+                marker in token
+                for marker in (
+                    "constraintforce", "constraintpressure", "constraintselfweight",
+                    "constraintcentrif", "constraintacceleration", "constraintload",
+                    "remoteload", "force", "pressure", "selfweight", "centrifugal",
+                )
+            ):
+                has_load = True
+        diagnostics = []
+        if not has_support:
+            diagnostics.append("buckling analysis has no support constraint")
+        if not has_load:
+            diagnostics.append("buckling analysis has no load")
+        return diagnostics
+
+    @staticmethod
+    def _check_diagnostics(checked: Any, strict: bool) -> list[Any]:
+        """Normalize FreeCAD checker output without treating messages as success."""
+
+        if isinstance(checked, tuple) and len(checked) == 2 and isinstance(checked[0], bool):
+            ok, message = checked
+            if not ok:
+                return [message] if message else ["FreeCAD analysis check failed"]
+            # Some FreeCAD versions return ``(True, message)`` for a warning.
+            # Strict validation must surface that message rather than silently
+            # considering the check successful.
+            if strict and message:
+                return [message]
+            return []
+        if isinstance(checked, bool):
+            return [] if checked else ["FreeCAD analysis check failed"]
+        if checked is None or checked == "":
+            return []
+        if isinstance(checked, (list, tuple)):
+            return list(checked)
+        return [checked]
+
+    def validate(self, analysis: str, strict: bool = True) -> Dict[str, Any]:
         doc = self._document()
         analysis_obj = self._find(doc, analysis)
         members = list(getattr(analysis_obj, "Group", []) or [])
         solver = next((item for item in members if self.fem_type(item) == "Fem::SolverCalculiX"), None)
         mesh = next((item for item in members if "FemMesh" in getattr(item, "TypeId", "")), None)
         diagnostics: list[Any] = []
+        if not isinstance(strict, bool):
+            raise OperationError("strict must be boolean")
         if solver is None:
             diagnostics.append("analysis has no CalculiX solver")
         if mesh is None:
@@ -809,11 +1079,7 @@ class FreeCADOperations:
             try:
                 member = _membertools.AnalysisMember(analysis_obj)
                 checked = _checksanalysis.check_member_for_solver_calculix(analysis_obj, solver, mesh, member)
-                if isinstance(checked, tuple) and len(checked) == 2 and isinstance(checked[0], bool):
-                    if not checked[0] and checked[1]:
-                        diagnostics.append(checked[1])
-                elif checked:
-                    diagnostics.extend(checked if isinstance(checked, (list, tuple)) else [checked])
+                diagnostics.extend(self._check_diagnostics(checked, strict))
             except Exception as exc:
                 diagnostics.append(str(exc))
         else:
@@ -822,6 +1088,22 @@ class FreeCADOperations:
                 diagnostics.append("analysis has no material")
             if not any("Constraint" in kind for kind in kinds):
                 diagnostics.append("analysis has no constraints")
+
+        analysis_type = (
+            str(getattr(solver, "AnalysisType", "static")).strip().lower()
+            if solver is not None
+            else "static"
+        )
+        if analysis_type == "frequency":
+            material_members = [
+                item
+                for item in members
+                if "material" in (self.fem_type(item) + " " + str(getattr(item, "TypeId", ""))).lower()
+            ]
+            if not material_members or not any(self._material_has_density(item) for item in material_members):
+                diagnostics.append("frequency analysis requires material density")
+        elif analysis_type == "buckling":
+            diagnostics.extend(self._buckling_member_diagnostics(members))
         return {"valid": not diagnostics, "diagnostics": diagnostics, "analysis": self._object_id(analysis_obj), "solver": self._object_id(solver) if solver else None, "mesh": self._object_id(mesh) if mesh else None}
 
     def save_document(self, path: Optional[str] = None, overwrite: bool = False) -> Dict[str, Any]:

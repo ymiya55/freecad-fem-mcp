@@ -260,6 +260,78 @@ def test_typed_load_and_boundary_routes_use_native_constraint_kinds() -> None:
     assert operations.calls[-1][2]["gravity_acceleration"] == 9.81
 
 
+def test_analysis_route_forwards_frequency_and_buckling_controls() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        def __init__(self):
+            self.create_calls = []
+            self.validate_calls = []
+
+        def create_analysis(self, *args, **kwargs):
+            self.create_calls.append((args, kwargs))
+            return {"name": "Analysis", "analysis_type": kwargs["analysis_type"]}
+
+        def validate(self, analysis, *, strict=True):
+            self.validate_calls.append((analysis, strict))
+            return {"valid": True, "diagnostics": []}
+
+    operations = _Operations()
+    service = FEMService(operations=operations, selection=_Selection(), jobs=object(), pipeline=object())
+    frequency = service(Request(70, "analysis", {
+        "action": "create", "analysis_type": "frequency", "eigenmodes_count": 5,
+        "frequency_low_hz": 0.0, "frequency_high_hz": 1000.0,
+    }))
+    assert frequency["analysis_id"] == "Analysis"
+    assert operations.create_calls[-1][1] == {
+        "analysis_type": "frequency", "eigenmodes_count": 5,
+        "frequency_low_hz": 0.0, "frequency_high_hz": 1000.0,
+        "buckling_factors": None, "buckling_accuracy": None,
+    }
+
+    buckling = service(Request(71, "analysis", {
+        "action": "create", "analysis_type": "buckling", "buckling_factors": 3,
+        "buckling_accuracy": 0.1,
+    }))
+    assert buckling["analysis_id"] == "Analysis"
+    assert operations.create_calls[-1][1]["buckling_factors"] == 3
+
+    checked = service(Request(72, "validate", {
+        "action": "validate", "analysis_id": "Analysis", "strict": False,
+    }))
+    assert checked["valid"] is True
+    assert operations.validate_calls[-1] == ("Analysis", False)
+
+
+def test_analysis_route_rejects_static_mode_specific_fields() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        @staticmethod
+        def create_analysis(*_args, **_kwargs):
+            raise AssertionError("invalid analysis reached native operations")
+
+    service = FEMService(operations=_Operations(), selection=_Selection(), jobs=object(), pipeline=object())
+    with pytest.raises(ServiceError):
+        service(Request(73, "analysis", {
+            "action": "create", "analysis_type": "static", "eigenmodes_count": 1,
+        }))
+
+
 def test_remote_displacement_and_centrifugal_routes_are_strict() -> None:
     class _Selection:
         gui = None

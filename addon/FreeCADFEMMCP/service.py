@@ -35,7 +35,11 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
         {"action"},
     ),
     ("analysis", "create"): (
-        {"action", "document_id", "name", "solver", "analysis_type"},
+        {
+            "action", "document_id", "name", "solver", "analysis_type",
+            "eigenmodes_count", "frequency_low_hz", "frequency_high_hz",
+            "buckling_factors", "buckling_accuracy",
+        },
         {"action"},
     ),
     ("material", "assign"): (
@@ -234,8 +238,7 @@ class FEMService:
             cls._optional_text(params, "name")
             if params.get("solver", "SolverCalculiX") != "SolverCalculiX":
                 raise ServiceError("solver is unsupported")
-            if params.get("analysis_type", "static") != "static":
-                raise ServiceError("analysis_type is unsupported")
+            cls._validate_analysis_options(params)
             return
         if method == "material":
             cls._require_identifier(params, "analysis_id")
@@ -278,6 +281,69 @@ class FEMService:
                 cls._strict_int(params["max_items"], "max_items", 1, 10000)
             if action == "show" and "frame" in params:
                 cls._strict_int(params["frame"], "frame", 0, 100000)
+
+    @classmethod
+    def _validate_analysis_options(cls, params: Mapping[str, Any]) -> None:
+        """Validate the mode-specific SolverCalculiX creation contract."""
+
+        analysis_type = params.get("analysis_type", "static")
+        if not isinstance(analysis_type, str) or analysis_type not in {"static", "frequency", "buckling"}:
+            raise ServiceError("analysis_type is unsupported")
+
+        eigenmodes_count = params.get("eigenmodes_count")
+        frequency_low_hz = params.get("frequency_low_hz")
+        frequency_high_hz = params.get("frequency_high_hz")
+        buckling_factors = params.get("buckling_factors")
+        buckling_accuracy = params.get("buckling_accuracy")
+        frequency_fields = (eigenmodes_count, frequency_low_hz, frequency_high_hz)
+        buckling_fields = (buckling_factors, buckling_accuracy)
+
+        if analysis_type == "static":
+            if any(value is not None for value in (*frequency_fields, *buckling_fields)):
+                raise ServiceError("static analysis does not accept analysis-specific fields")
+            return
+
+        if analysis_type == "frequency":
+            if eigenmodes_count is None:
+                raise ServiceError("eigenmodes_count is required for frequency analysis")
+            cls._strict_int(eigenmodes_count, "eigenmodes_count", 1, 100)
+            if (frequency_low_hz is None) != (frequency_high_hz is None):
+                raise ServiceError(
+                    "frequency_low_hz and frequency_high_hz must be provided together"
+                )
+            if any(value is not None for value in buckling_fields):
+                raise ServiceError("frequency analysis does not accept buckling fields")
+            if frequency_low_hz is not None:
+                low = cls._finite_value(
+                    frequency_low_hz, "frequency_low_hz", strict_numeric=True
+                )
+                high = cls._finite_value(
+                    frequency_high_hz, "frequency_high_hz", strict_numeric=True
+                )
+                if not 0.0 <= low <= 1e9:
+                    raise ServiceError("frequency_low_hz is outside the allowed range")
+                if not 0.0 <= high <= 1e9:
+                    raise ServiceError("frequency_high_hz is outside the allowed range")
+                if high <= low:
+                    raise ServiceError(
+                        "frequency_high_hz must be greater than frequency_low_hz"
+                    )
+            return
+
+        # Buckling mode: both controls are required, and no frequency fields
+        # may leak through this direct bridge route.
+        if buckling_factors is None:
+            raise ServiceError("buckling_factors is required for buckling analysis")
+        if buckling_accuracy is None:
+            raise ServiceError("buckling_accuracy is required for buckling analysis")
+        cls._strict_int(buckling_factors, "buckling_factors", 1, 100)
+        accuracy = cls._finite_value(
+            buckling_accuracy, "buckling_accuracy", strict_numeric=True
+        )
+        if not 0.0 < accuracy <= 1.0:
+            raise ServiceError("buckling_accuracy is outside the allowed range")
+        if any(value is not None for value in frequency_fields):
+            raise ServiceError("buckling analysis does not accept frequency fields")
 
     def _validate_constraint_contract(self, params: Mapping[str, Any]) -> None:
         # Keep the documented legacy target aliases, but do not permit an
@@ -343,7 +409,7 @@ class FEMService:
                 "ready": True,
                 "version": version,
                 "capabilities": {
-                    "analysis_types": ["static"],
+                    "analysis_types": ["static", "frequency", "buckling"],
                     "loads": [
                         "force", "pressure", "gravity", "acceleration", "centrifugal",
                         "remote_force", "remote_moment",
@@ -392,7 +458,15 @@ class FEMService:
 
         if method == "analysis":
             self._action(params, "create")
-            result = self.operations.create_analysis(params.get("name", "Analysis"))
+            result = self.operations.create_analysis(
+                params.get("name", "Analysis"),
+                analysis_type=params.get("analysis_type", "static"),
+                eigenmodes_count=params.get("eigenmodes_count"),
+                frequency_low_hz=params.get("frequency_low_hz"),
+                frequency_high_hz=params.get("frequency_high_hz"),
+                buckling_factors=params.get("buckling_factors"),
+                buckling_accuracy=params.get("buckling_accuracy"),
+            )
             return {"analysis_id": result["name"], **result}
 
         if method == "material":
@@ -466,7 +540,9 @@ class FEMService:
 
         if method == "validate":
             self._action(params, "validate")
-            return self.operations.validate(params.get("analysis_id"))
+            return self.operations.validate(
+                params.get("analysis_id"), strict=params.get("strict", True)
+            )
 
         if method == "jobs":
             action = self._action(params, {"start", "get", "list", "cancel"})

@@ -102,6 +102,18 @@ RemoteRotationVector3 = Annotated[list[RemoteRotationComponent], Field(min_lengt
 CentrifugalFrequencyHz = Annotated[StrictFloat, Field(gt=0, le=1e9), AfterValidator(_finite)]
 BoundedInt = Annotated[StrictInt, Field(ge=0, le=2_147_483_647)]
 
+# SolverCalculiX analysis controls.  These aliases stay strict at the MCP
+# boundary so JSON booleans/strings cannot silently become numeric solver
+# settings.
+EigenmodesCount = Annotated[StrictInt, Field(ge=1, le=100)]
+AnalysisFrequencyHz = Annotated[
+    StrictFloat, Field(ge=0.0, le=1e9), AfterValidator(_finite)
+]
+BucklingFactors = Annotated[StrictInt, Field(ge=1, le=100)]
+BucklingAccuracy = Annotated[
+    StrictFloat, Field(gt=0.0, le=1.0), AfterValidator(_finite)
+]
+
 
 class StrictModel(BaseModel):
     """Base class used by every externally supplied request model."""
@@ -188,15 +200,63 @@ class SaveRequest(StrictModel):
         return self
 
 
-class AnalysisRequest(StrictModel):
+class _AnalysisOptions(StrictModel):
+    """Shared SolverCalculiX analysis discriminator and variant controls."""
+
+    analysis_type: Literal["static", "frequency", "buckling"] = "static"
+    eigenmodes_count: EigenmodesCount | None = None
+    frequency_low_hz: AnalysisFrequencyHz | None = None
+    frequency_high_hz: AnalysisFrequencyHz | None = None
+    buckling_factors: BucklingFactors | None = None
+    buckling_accuracy: BucklingAccuracy | None = None
+
+    @model_validator(mode="after")
+    def validate_analysis_variant(self) -> "_AnalysisOptions":
+        frequency_fields = (
+            self.eigenmodes_count,
+            self.frequency_low_hz,
+            self.frequency_high_hz,
+        )
+        buckling_fields = (self.buckling_factors, self.buckling_accuracy)
+
+        if self.analysis_type == "static":
+            if any(value is not None for value in (*frequency_fields, *buckling_fields)):
+                raise ValueError("static analysis does not accept analysis-specific fields")
+            return self
+
+        if self.analysis_type == "frequency":
+            if self.eigenmodes_count is None:
+                raise ValueError("eigenmodes_count is required for frequency analysis")
+            if (self.frequency_low_hz is None) != (self.frequency_high_hz is None):
+                raise ValueError(
+                    "frequency_low_hz and frequency_high_hz must be provided together"
+                )
+            if (
+                self.frequency_low_hz is not None
+                and self.frequency_high_hz is not None
+                and self.frequency_high_hz <= self.frequency_low_hz
+            ):
+                raise ValueError("frequency_high_hz must be greater than frequency_low_hz")
+            if any(value is not None for value in buckling_fields):
+                raise ValueError("frequency analysis does not accept buckling fields")
+            return self
+
+        # The Literal above makes this branch buckling-only while keeping the
+        # validation explicit if another variant is added in the future.
+        if self.buckling_factors is None or self.buckling_accuracy is None:
+            raise ValueError(
+                "buckling_factors and buckling_accuracy are required for buckling analysis"
+            )
+        if any(value is not None for value in frequency_fields):
+            raise ValueError("buckling analysis does not accept frequency fields")
+        return self
+
+
+class AnalysisRequest(_AnalysisOptions):
     document_id: BoundedText | None = None
     analysis_id: BoundedText | None = None
     name: OptionalText | None = None
     solver: Literal["SolverCalculiX"] = "SolverCalculiX"
-    # ``static`` is the FreeCAD SolverCalculiX enum for the MVP.  Dynamic,
-    # buckling, thermal, and electromagnetic analyses are intentionally not
-    # exposed until their Addon implementations are validated.
-    analysis_type: Literal["static"] = "static"
 
 
 class MaterialRequest(StrictModel):
@@ -363,11 +423,10 @@ class SaveDocumentRequest(SaveRequest):
     pass
 
 
-class CreateAnalysisRequest(StrictModel):
+class CreateAnalysisRequest(_AnalysisOptions):
     document_id: BoundedText | None = None
     name: OptionalText | None = None
     solver: Literal["SolverCalculiX"] = "SolverCalculiX"
-    analysis_type: Literal["static"] = "static"
 
 
 class AssignMaterialRequest(StrictModel):
@@ -892,6 +951,9 @@ __all__ = [
     "PUBLIC_REQUEST_MODELS",
     "BoundedPath",
     "BoundedText",
+    "AnalysisFrequencyHz",
+    "BucklingAccuracy",
+    "BucklingFactors",
     "CaptureRequest",
     "CaptureInput",
     "CaptureParams",
@@ -902,6 +964,7 @@ __all__ = [
     "DocumentInput",
     "DocumentParams",
     "EntityRef",
+    "EigenmodesCount",
     "EmptyRequest",
     "FiniteFloat",
     "JobsRequest",

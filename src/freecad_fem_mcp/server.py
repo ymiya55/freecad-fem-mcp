@@ -39,15 +39,19 @@ from .models import (
     AddRemoteDisplacementRequest,
     AddRemoteLoadRequest,
     Amplitude,
+    AnalysisFrequencyHz,
     AssignMaterialRequest,
     BoundedPath,
     BoundedText,
+    BucklingAccuracy,
+    BucklingFactors,
     CancelJobRequest,
     CaptureGuiRequest,
     CentrifugalFrequencyHz,
     CreateAnalysisRequest,
     CreateMeshRequest,
     EntityRef,
+    EigenmodesCount,
     FiniteFloat,
     GetJobRequest,
     GetResultsRequest,
@@ -340,20 +344,30 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
 
     @app.tool(
         name="create_analysis",
-        description="Create a SolverCalculiX static analysis.",
+        description="Create a SolverCalculiX static, frequency, or buckling analysis.",
         annotations=ann(readonly=False, destructive=False),
     )
     async def create_analysis(
         document_id: BoundedText | None = None,
         name: OptionalText | None = None,
         solver: Literal["SolverCalculiX"] = "SolverCalculiX",
-        analysis_type: Literal["static"] = "static",
+        analysis_type: Literal["static", "frequency", "buckling"] = "static",
+        eigenmodes_count: EigenmodesCount | None = None,
+        frequency_low_hz: AnalysisFrequencyHz | None = None,
+        frequency_high_hz: AnalysisFrequencyHz | None = None,
+        buckling_factors: BucklingFactors | None = None,
+        buckling_accuracy: BucklingAccuracy | None = None,
     ) -> Any:
         request = CreateAnalysisRequest(
             document_id=document_id,
             name=name,
             solver=solver,
             analysis_type=analysis_type,
+            eigenmodes_count=eigenmodes_count,
+            frequency_low_hz=frequency_low_hz,
+            frequency_high_hz=frequency_high_hz,
+            buckling_factors=buckling_factors,
+            buckling_accuracy=buckling_accuracy,
         )
         return await invoke("analysis", "create", request)
 

@@ -185,6 +185,177 @@ class _ObjectsFemWithCentrifugal(_ObjectsFem):
         return _NativeCentrifugal(name)
 
 
+class _NativeSolverForAnalysis:
+    """Closed native-shaped solver fake used to exercise mode properties."""
+
+    _allowed = {
+        "Name", "Label", "TypeId", "AnalysisType", "EigenmodesCount",
+        "EigenmodeLow", "EigenmodeHigh", "BucklingFactors", "BucklingAccuracy",
+        "GeometricalNonlinearity", "MaterialNonlinearity",
+    }
+
+    def __setattr__(self, name, value):
+        if name not in self._allowed:
+            raise AssertionError("unexpected native solver property: {}".format(name))
+        object.__setattr__(self, name, value)
+
+    def __init__(self, name: str):
+        self.Name, self.Label, self.TypeId = name, name, "Fem::SolverCalculiX"
+        self.AnalysisType = "static"
+        self.EigenmodesCount = 0
+        self.EigenmodeLow = "0 Hz"
+        self.EigenmodeHigh = "0 Hz"
+        self.BucklingFactors = 0
+        self.BucklingAccuracy = 0.0
+        self.GeometricalNonlinearity = "linear"
+        self.MaterialNonlinearity = "linear"
+
+
+class _NativeAnalysisForCreate:
+    TypeId = "Fem::FemAnalysis"
+
+    def __init__(self, name: str):
+        self.Name = self.Label = name
+        self.Group = []
+
+    def addObject(self, obj):
+        self.Group.append(obj)
+
+
+class _AnalysisDocument:
+    def __init__(self, solver_factory=_NativeSolverForAnalysis):
+        self.Name = "Doc"
+        self.Objects = []
+        self._objects = {}
+        self._solver_factory = solver_factory
+        self.transaction_events = []
+
+    def getObject(self, name):
+        return self._objects.get(name)
+
+    def addObject(self, type_id, name):
+        if type_id == "Fem::FemAnalysis":
+            obj = _NativeAnalysisForCreate(name)
+        elif type_id == "Fem::SolverCalculiX":
+            obj = self._solver_factory(name)
+        else:
+            obj = type("NativeObject", (), {"Name": name, "Label": name, "TypeId": type_id})()
+        self.Objects.append(obj)
+        self._objects[name] = obj
+        return obj
+
+    def openTransaction(self, label):
+        self.transaction_events.append(("open", label))
+
+    def commitTransaction(self):
+        self.transaction_events.append(("commit",))
+
+    def abortTransaction(self):
+        self.transaction_events.append(("abort",))
+
+
+class _ObjectsFemForAnalysis:
+    @staticmethod
+    def makeAnalysis(doc, name):
+        return doc.addObject("Fem::FemAnalysis", name)
+
+    @staticmethod
+    def makeSolverCalculiX(doc, name):
+        return doc.addObject("Fem::SolverCalculiX", name)
+
+
+class _AnalysisApp:
+    def __init__(self, solver_factory=_NativeSolverForAnalysis):
+        self.ActiveDocument = _AnalysisDocument(solver_factory)
+
+    @staticmethod
+    def Version():
+        return ("1", "1", "3")
+
+
+def _analysis_solver(app: _AnalysisApp):
+    return next(item for item in app.ActiveDocument.Objects if item.TypeId == "Fem::SolverCalculiX")
+
+
+def test_create_analysis_sets_frequency_native_controls_and_hz_limits() -> None:
+    app = _AnalysisApp()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemForAnalysis)
+    result = operations.create_analysis(
+        "FrequencyAnalysis",
+        "frequency",
+        eigenmodes_count=4,
+        frequency_low_hz=12.5,
+        frequency_high_hz=250.0,
+    )
+    solver = _analysis_solver(app)
+    assert result["analysis_type"] == "frequency"
+    assert solver.AnalysisType == "frequency"
+    assert solver.EigenmodesCount == 4
+    assert solver.EigenmodeLow == "12.5 Hz"
+    assert solver.EigenmodeHigh == "250 Hz"
+    assert app.ActiveDocument.transaction_events[-1][0] == "commit"
+
+
+def test_create_analysis_defaults_frequency_limits_to_zero_hz() -> None:
+    app = _AnalysisApp()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemForAnalysis)
+    operations.create_analysis("FrequencyAnalysis", "frequency", eigenmodes_count=1)
+    solver = _analysis_solver(app)
+    assert solver.EigenmodeLow == "0 Hz"
+    assert solver.EigenmodeHigh == "0 Hz"
+
+
+def test_create_analysis_sets_buckling_controls() -> None:
+    app = _AnalysisApp()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemForAnalysis)
+    operations.create_analysis(
+        "BucklingAnalysis",
+        "buckling",
+        buckling_factors=8,
+        buckling_accuracy=0.05,
+    )
+    solver = _analysis_solver(app)
+    assert solver.AnalysisType == "buckling"
+    assert solver.BucklingFactors == 8
+    assert solver.BucklingAccuracy == 0.05
+
+
+@pytest.mark.parametrize(
+    "analysis_type, kwargs",
+    [
+        ("static", {"eigenmodes_count": 1}),
+        ("frequency", {"eigenmodes_count": 1, "frequency_low_hz": 1.0}),
+        ("frequency", {"eigenmodes_count": 1, "frequency_low_hz": 1.0, "frequency_high_hz": 1.0}),
+        ("buckling", {"buckling_factors": 1}),
+    ],
+)
+def test_create_analysis_rejects_invalid_mode_contract(analysis_type, kwargs) -> None:
+    app = _AnalysisApp()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemForAnalysis)
+    with pytest.raises(OperationError):
+        operations.create_analysis("Analysis", analysis_type, **kwargs)
+
+
+def test_create_analysis_rolls_back_when_required_native_property_is_missing() -> None:
+    class _SolverWithoutBucklingAccuracy(_NativeSolverForAnalysis):
+        _allowed = _NativeSolverForAnalysis._allowed
+
+        def __init__(self, name: str):
+            super().__init__(name)
+            object.__delattr__(self, "BucklingAccuracy")
+
+    app = _AnalysisApp(_SolverWithoutBucklingAccuracy)
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemForAnalysis)
+    with pytest.raises(OperationError):
+        operations.create_analysis(
+            "BucklingAnalysis", "buckling", buckling_factors=2, buckling_accuracy=0.1
+        )
+    assert app.ActiveDocument.transaction_events[-1][0] == "abort"
+    analysis = app.ActiveDocument.getObject("BucklingAnalysis")
+    assert analysis is not None
+    assert analysis.Group == []
+
+
 def test_displacement_uses_freecad_11_native_property_names() -> None:
     app = _App()
     operations = FreeCADOperations(app=app, objects_fem=_ObjectsFem)

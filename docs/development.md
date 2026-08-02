@@ -90,6 +90,7 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 - `add_remote_displacement`から自由/指定成分を持つ`Fem::ConstraintRigidBody`を生成し、m→mmとaxis-angle回転を確認
 - 任意加速度をselfweight、遠心力を直線Edge軸を持つ`Fem::ConstraintPython`として生成し、FreeCAD 1.1.3 GUIで確認
 - 3点のtabular amplitudeを`Fem::ConstraintForce`の`EnableAmplitude` / `AmplitudeValues`へ生成し、重複時刻を拒否してrevision不変を確認
+- frequency / buckling解析を`Fem::SolverCalculiX`としてGUI生成し、無効な周波数範囲・座屈精度を拒否、密度・支持・荷重不足のstrict診断を確認
 - 不正トークンによる解析変更を拒否し、FreeCADドキュメントが不変
 - 軸力棒の応力10.0 MPa（理論10.0 MPa、誤差0%）
 - 荷重端変位0.00473854 mm（理論0.00476190 mm、誤差0.4907%）

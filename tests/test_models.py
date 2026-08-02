@@ -12,6 +12,7 @@ from freecad_fem_mcp.models import (
     AddRemoteDisplacementRequest,
     AddRemoteLoadRequest,
     EntityRef,
+    CreateAnalysisRequest,
     MaterialRequest,
     MeshRequest,
     StatusRequest,
@@ -31,11 +32,47 @@ def test_models_reject_non_finite_values() -> None:
         MaterialRequest(youngs_modulus_pa=math.inf)
 
 
-def test_static_solver_and_gmsh_are_the_only_mvp_choices() -> None:
+def test_analysis_variants_require_matching_solver_controls() -> None:
     assert AnalysisRequest().analysis_type == "static"
     assert MeshRequest(analysis_id="Analysis").algorithm == "gmsh"
+
+    frequency = CreateAnalysisRequest(
+        analysis_type="frequency",
+        eigenmodes_count=6,
+        frequency_low_hz=10.0,
+        frequency_high_hz=100.0,
+    )
+    assert frequency.eigenmodes_count == 6
+    assert AnalysisRequest(analysis_type="frequency", eigenmodes_count=2).frequency_low_hz is None
+
+    buckling = CreateAnalysisRequest(
+        analysis_type="buckling", buckling_factors=3, buckling_accuracy=0.01
+    )
+    assert buckling.buckling_factors == 3
+
     with pytest.raises(ValidationError):
-        AnalysisRequest(analysis_type="frequency")
+        CreateAnalysisRequest(analysis_type="frequency")
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(analysis_type="frequency", eigenmodes_count=2, frequency_low_hz=1.0)
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(
+            analysis_type="frequency", eigenmodes_count=2,
+            frequency_low_hz=10.0, frequency_high_hz=10.0,
+        )
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(analysis_type="frequency", eigenmodes_count=2, buckling_factors=1)
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(analysis_type="buckling", buckling_factors=1)
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(analysis_type="buckling", buckling_factors=1, buckling_accuracy=0.1, eigenmodes_count=2)
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(analysis_type="static", eigenmodes_count=1)
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(analysis_type="frequency", eigenmodes_count=True)
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(analysis_type="buckling", buckling_factors=1, buckling_accuracy=0.0)
+    with pytest.raises(ValidationError):
+        CreateAnalysisRequest(analysis_type="frequency", eigenmodes_count=101)
     with pytest.raises(ValidationError):
         MeshRequest(analysis_id="Analysis", algorithm="netgen")
 
