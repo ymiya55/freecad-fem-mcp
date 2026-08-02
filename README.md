@@ -122,6 +122,8 @@ uv run --extra dev pip-audit --skip-editable
 
 Codex、Claude Desktop、MCP Inspectorへの接続方法と検証プロンプトは[MCPクライアント設定](docs/clients.md)にまとめています。
 
+非線形、接触、固有振動、座屈へ拡張する順序と安全なAPI境界は[次期解析機能の設計](docs/roadmap.md)を参照してください。
+
 ## ライセンス
 
 MIT License
