@@ -199,10 +199,14 @@ class MaterialRequest(StrictModel):
 
 
 class EntityRef(StrictModel):
-    """A FreeCAD object and optional subelements selected by a constraint."""
+    """A FreeCAD object and explicit subelements selected by a constraint."""
 
-    object_name: BoundedText
-    subelements: StringList = Field(default_factory=list)
+    object_name: BoundedText = Field(
+        description="Exact FreeCAD object Name, for example 'Cantilever'; do not use object_id."
+    )
+    subelements: StringList = Field(
+        description="FreeCAD subelement names such as 'Face1' or 'Edge2'; use [] for the whole object.",
+    )
 
 
 class ConstraintRequest(StrictModel):
@@ -214,7 +218,14 @@ class ConstraintRequest(StrictModel):
     )
     # Empty targets deliberately mean "the current GUI selection".  The Addon
     # resolves that selection on the FreeCAD main thread.
-    targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(default_factory=list)
+    targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
+        default_factory=list,
+        description=(
+            "Entity references. Each item must contain object_name and subelements, "
+            "for example [{object_name: 'Cantilever', subelements: ['Face1']}]. "
+            "Leave empty to use the current FreeCAD GUI selection."
+        ),
+    )
     displacement_m: ValueList = Field(default_factory=list)
     force_n: ValueList = Field(default_factory=list)
     pressure_pa: ValueList = Field(default_factory=list)
@@ -307,7 +318,14 @@ class AddConstraintRequest(StrictModel):
     document_id: BoundedText | None = None
     analysis_id: BoundedText
     constraint_type: Literal["fixed", "displacement", "force", "pressure", "selfweight"]
-    targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(default_factory=list)
+    targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
+        default_factory=list,
+        description=(
+            "Entity references using object_name and subelements; e.g. "
+            "[{object_name: 'Cantilever', subelements: ['Face1']}]. "
+            "An empty list uses the current GUI selection."
+        ),
+    )
     displacement_m: ValueList = Field(default_factory=list)
     force_n: ValueList = Field(default_factory=list)
     pressure_pa: ValueList = Field(default_factory=list)

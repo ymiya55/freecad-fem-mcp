@@ -360,14 +360,30 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
 
     @app.tool(
         name="add_constraint",
-        description="Add a bounded analysis constraint.",
+        description=(
+            "Add a bounded analysis constraint. Use targets with exact FreeCAD "
+            "object_name and subelements, for example "
+            "[{object_name: 'Cantilever', subelements: ['Face1']}]. "
+            "Leave targets empty to use the current GUI selection; never use object_id."
+        ),
         annotations=ann(readonly=False, destructive=False),
     )
     async def add_constraint(
         analysis_id: BoundedText,
         constraint_type: Literal["fixed", "displacement", "force", "pressure", "selfweight"],
         document_id: BoundedText | None = None,
-        targets: Annotated[list[EntityRef], Field(max_length=128)] | None = None,
+        targets: Annotated[
+            list[EntityRef],
+            Field(
+                max_length=128,
+                description=(
+                    "Each item must be {object_name, subelements}; example "
+                    "{object_name: 'Cantilever', subelements: ['Face1']}. "
+                    "Use [] for current GUI selection."
+                ),
+            ),
+        ]
+        | None = None,
         displacement_m: ValueList | None = None,
         force_n: ValueList | None = None,
         pressure_pa: ValueList | None = None,
