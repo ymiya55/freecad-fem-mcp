@@ -116,6 +116,8 @@ uv run --extra dev pip-audit --skip-editable
 
 詳細は[アーキテクチャ](docs/architecture.md)、[安全性](docs/security.md)、[開発ガイド](docs/development.md)を参照してください。
 
+Codex、Claude Desktop、MCP Inspectorへの接続方法と検証プロンプトは[MCPクライアント設定](docs/clients.md)にまとめています。
+
 ## ライセンス
 
 MIT License
