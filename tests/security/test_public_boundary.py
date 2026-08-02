@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "addon"))
 from freecad_fem_mcp.bridge import BRIDGE_METHODS  # noqa: E402
 from freecad_fem_mcp.models import (  # noqa: E402
     AddBoundaryConditionRequest,
+    AddConnectionRequest,
     AddLoadRequest,
     AddRemoteLoadRequest,
     AddRemoteDisplacementRequest,
@@ -461,6 +462,170 @@ def test_public_create_analysis_rejects_bad_numeric_fields(field: str, value: ob
         CreateAnalysisRequest(**params)
 
 
+_CONNECTION_SLAVE = {"object_name": "Upper", "subelements": ["Face3"]}
+_CONNECTION_MASTER = {"object_name": "Lower", "subelements": ["Face7"]}
+
+
+def _public_tie_params() -> dict[str, object]:
+    return {
+        "analysis_id": "Analysis",
+        "connection_type": "tie",
+        "slave": _CONNECTION_SLAVE,
+        "master": _CONNECTION_MASTER,
+        "tolerance_m": 0.0,
+        "adjust": False,
+    }
+
+
+def _public_contact_params() -> dict[str, object]:
+    return {
+        "analysis_id": "Analysis",
+        "connection_type": "contact",
+        "slave": _CONNECTION_SLAVE,
+        "master": _CONNECTION_MASTER,
+        "surface_behavior": "hard",
+    }
+
+
+def test_public_connection_accepts_closed_tie_and_contact_variants() -> None:
+    tie = AddConnectionRequest(**_public_tie_params())
+    assert tie.tolerance_m == 0.0
+    assert tie.adjust is False
+
+    contact = AddConnectionRequest(**_public_contact_params())
+    assert contact.surface_behavior == "hard"
+
+    endpoint_tie = AddConnectionRequest(
+        **{**_public_tie_params(), "tolerance_m": 1e6, "adjust": True}
+    )
+    assert endpoint_tie.tolerance_m == 1e6
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"connection_type": "tie"},
+        {
+            **_public_tie_params(),
+            "tolerance_m": None,
+        },
+        {
+            **_public_tie_params(),
+            "adjust": None,
+        },
+        {
+            **_public_tie_params(),
+            "surface_behavior": "hard",
+        },
+        {
+            **_public_contact_params(),
+            "tolerance_m": 0.1,
+        },
+        {
+            **_public_contact_params(),
+            "adjust": False,
+        },
+        {
+            **_public_contact_params(),
+            "surface_behavior": "linear",
+        },
+        {
+            **_public_contact_params(),
+            "surface_behavior": True,
+        },
+        {
+            **_public_tie_params(),
+            "connection_type": "bonded",
+        },
+        {
+            **_public_tie_params(),
+            "connection_type": True,
+        },
+        {
+            **_public_tie_params(),
+            "action": "__import__('os').system('whoami')",
+        },
+        {
+            **_public_contact_params(),
+            "friction_coefficient": 0.2,
+        },
+        {
+            **_public_contact_params(),
+            "slope": 1.0,
+        },
+        {
+            **_public_contact_params(),
+            "thermal_conductance": [1.0],
+        },
+        {
+            **_public_contact_params(),
+            "parameters": {"surface_behavior": "hard"},
+        },
+        {
+            **_public_contact_params(),
+            "kind": "contact",
+        },
+    ],
+)
+def test_public_connection_rejects_variant_confusion_and_extra_fields(
+    params: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        AddConnectionRequest(**params)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("tolerance_m", -0.1),
+        ("tolerance_m", 1e6 + 0.1),
+        ("tolerance_m", True),
+        ("tolerance_m", "1 m"),
+        ("tolerance_m", math.nan),
+        ("tolerance_m", math.inf),
+        ("adjust", 0),
+        ("adjust", 1),
+        ("adjust", "false"),
+        ("adjust", math.nan),
+    ],
+)
+def test_public_tie_rejects_bad_tolerance_and_adjust(field: str, value: object) -> None:
+    params = _public_tie_params()
+    params[field] = value
+    with pytest.raises(ValidationError):
+        AddConnectionRequest(**params)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("slave", {"object_name": "Upper", "subelements": []}),
+        ("slave", {"object_name": "Upper", "subelements": ["Face1", "Face2"]}),
+        ("slave", {"object_name": "Upper", "subelements": ["Edge1"]}),
+        ("slave", {"object_name": "Upper", "subelements": ["Face0"]}),
+        ("slave", {"object_name": "Upper", "subelements": ["face1"]}),
+        ("slave", {"object_name": "Upper", "subelements": "Face1"}),
+        ("slave", {"object_name": "Upper", "subelements": ["Face1"], "kind": "Face"}),
+        ("master", {"object_name": "Lower", "subelements": []}),
+        ("master", {"object_name": "Lower", "subelements": ["Vertex1"]}),
+        ("master", {"object_name": "Lower", "subelements": ["Face0"]}),
+        ("master", {"object_name": "Lower", "subelements": ["Face1", "Face2"]}),
+    ],
+)
+def test_public_connection_requires_one_face_per_side(field: str, value: object) -> None:
+    params = _public_tie_params()
+    params[field] = value
+    with pytest.raises(ValidationError):
+        AddConnectionRequest(**params)
+
+
+def test_public_connection_rejects_same_slave_and_master_face() -> None:
+    params = _public_tie_params()
+    params["master"] = {"object_name": "Upper", "subelements": ["Face3"]}
+    with pytest.raises(ValidationError):
+        AddConnectionRequest(**params)
+
+
 def test_public_numeric_limits_remain_bounded() -> None:
     with pytest.raises(ValidationError):
         CreateMeshRequest(analysis_id="A", element_size_mm=math.inf)
@@ -729,6 +894,13 @@ class _SecurityShape:
         return self._elements[name]
 
 
+class _SecurityMismatchedShape(_SecurityShape):
+    def getElement(self, name: str) -> _SecurityShapeElement:
+        if name == "Face1":
+            return _SecurityShapeElement("Edge")
+        return super().getElement(name)
+
+
 class _SecurityShapeObject:
     def __init__(self, shape: _SecurityShape | None = None) -> None:
         self.Shape = shape or _SecurityShape()
@@ -764,12 +936,152 @@ def test_addon_native_centrifugal_revalidation_requires_linear_axis_and_solids()
             FreeCADOperations._validate_centrifugal_bodies([(obj, invalid_target)])
 
 
+class _ConnectionNative:
+    def __init__(self, name: str, type_id: str) -> None:
+        self.Name = name
+        self.Label = name
+        self.TypeId = type_id
+        self.References: list[tuple[object, str]] = []
+        self.Tolerance = 0.0
+        self.Adjust = False
+        self.CyclicSymmetry = False
+        self.SurfaceBehavior = "Hard"
+        self.Friction = False
+        self.EnableThermalContact = False
+
+
+class _ConnectionObjectsFem:
+    @staticmethod
+    def makeConstraintTie(_doc: object, name: str) -> _ConnectionNative:
+        return _ConnectionNative(name, "Fem::ConstraintTie")
+
+    @staticmethod
+    def makeConstraintContact(_doc: object, name: str) -> _ConnectionNative:
+        return _ConnectionNative(name, "Fem::ConstraintContact")
+
+
+class _ConnectionSolver:
+    Name = "SolverCalculiX"
+    Label = "SolverCalculiX"
+    TypeId = "Fem::SolverCalculiX"
+    AnalysisType = "static"
+
+
+class _ConnectionAnalysis:
+    Name = "Analysis"
+    Label = "Analysis"
+    TypeId = "Fem::FemAnalysis"
+
+    def __init__(self) -> None:
+        self.Group: list[object] = [_ConnectionSolver()]
+
+    def addObject(self, obj: object) -> None:
+        self.Group.append(obj)
+
+
+class _ConnectionDocument:
+    Name = "Doc"
+
+    def __init__(self) -> None:
+        self.analysis = _ConnectionAnalysis()
+        self.upper = _SecurityShapeObject(_SecurityShape())
+        self.upper.Name = self.upper.Label = "Upper"
+        self.lower = _SecurityShapeObject(_SecurityShape())
+        self.lower.Name = self.lower.Label = "Lower"
+        self.Objects = [self.analysis, self.upper, self.lower]
+        self._objects = {
+            "Analysis": self.analysis,
+            "Upper": self.upper,
+            "Lower": self.lower,
+        }
+
+    def getObject(self, name: str) -> object | None:
+        return self._objects.get(name)
+
+    def openTransaction(self, _label: str) -> None:
+        return None
+
+    def commitTransaction(self) -> None:
+        return None
+
+    def abortTransaction(self) -> None:
+        return None
+
+
+class _ConnectionApp:
+    def __init__(self) -> None:
+        self.ActiveDocument = _ConnectionDocument()
+
+    @staticmethod
+    def Version() -> tuple[str, str, str]:
+        return ("1", "1", "3")
+
+
+def _connection_native_params(kind: str = "tie") -> dict[str, object]:
+    params: dict[str, object] = {
+        "references": [
+            {"object": "Upper", "sub_element": "Face1"},
+            {"object": "Lower", "sub_element": "Face1"},
+        ],
+    }
+    if kind == "tie":
+        params.update({"tolerance_m": 0.001, "adjust": True})
+    else:
+        params.update({"surface_behavior": "hard"})
+    return params
+
+
+@pytest.mark.parametrize("kind", ("tie", "contact"))
+def test_addon_native_connection_revalidates_live_faces_and_preserves_group(
+    kind: str,
+) -> None:
+    app = _ConnectionApp()
+    operations = FreeCADOperations(app=app, objects_fem=_ConnectionObjectsFem)
+    analysis = app.ActiveDocument.analysis
+    before = list(analysis.Group)
+
+    result = operations.add_connection("Analysis", kind, _connection_native_params(kind))
+
+    assert result["kind"] == kind
+    assert len(analysis.Group) == len(before) + 1
+    native = analysis.Group[-1]
+    assert native.References == [
+        (app.ActiveDocument.upper, "Face1"),
+        (app.ActiveDocument.lower, "Face1"),
+    ]
+
+    invalid_cases = (
+        ("stale FaceN", "Upper", "Face999"),
+        ("wrong subshape kind", "Upper", "Edge1"),
+    )
+    for _label, object_name, sub_element in invalid_cases:
+        params = _connection_native_params(kind)
+        params["references"] = [
+            {"object": object_name, "sub_element": sub_element},
+            {"object": "Lower", "sub_element": "Face1"},
+        ]
+        group_before = list(analysis.Group)
+        with pytest.raises(OperationError):
+            operations.add_connection("Analysis", kind, params)
+        assert analysis.Group == group_before
+
+    wrong_shape = _SecurityShapeObject(_SecurityMismatchedShape())
+    wrong_shape.Name = wrong_shape.Label = "Upper"
+    app.ActiveDocument._objects["Upper"] = wrong_shape
+    app.ActiveDocument.Objects[1] = wrong_shape
+    group_before = list(analysis.Group)
+    with pytest.raises(OperationError):
+        operations.add_connection("Analysis", kind, _connection_native_params(kind))
+    assert analysis.Group == group_before
+
+
 class _RecordingOperations:
     app = None
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, object]]] = []
         self.analysis_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        self.connection_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self.remote_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self.remote_displacement_calls: list[
             tuple[tuple[object, ...], dict[str, object]]
@@ -789,6 +1101,10 @@ class _RecordingOperations:
             "name": name or "Analysis",
             "analysis_type": kwargs.get("analysis_type", "static"),
         }
+
+    def add_connection(self, *args: object, **kwargs: object) -> dict[str, object]:
+        self.connection_calls.append((args, kwargs))
+        return {"name": "Connection"}
 
     def add_remote_load(self, *args: object, **kwargs: object) -> dict[str, str]:
         self.remote_calls.append((args, kwargs))
@@ -995,6 +1311,220 @@ def test_addon_rejects_bad_analysis_numeric_fields_before_dispatch(
     with pytest.raises(ServiceError):
         service(Request(600, "analysis", params))
     assert len(operations.analysis_calls) == before
+
+
+def _addon_tie_params() -> dict[str, object]:
+    return {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "connection_type": "tie",
+        "slave": _CONNECTION_SLAVE,
+        "master": _CONNECTION_MASTER,
+        "tolerance_m": 0.0,
+        "adjust": False,
+    }
+
+
+def _addon_contact_params() -> dict[str, object]:
+    return {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "connection_type": "contact",
+        "slave": _CONNECTION_SLAVE,
+        "master": _CONNECTION_MASTER,
+        "surface_behavior": "hard",
+    }
+
+
+def test_addon_accepts_tie_and_contact_and_forwards_closed_payload() -> None:
+    service, operations = _service()
+    for request_id, params in enumerate((_addon_tie_params(), _addon_contact_params()), start=650):
+        before = len(operations.connection_calls)
+        result = service(Request(request_id, "connection", params))
+        assert result["connection_id"] == "Connection"
+        assert len(operations.connection_calls) == before + 1
+        args, kwargs = operations.connection_calls[-1]
+        assert kwargs == {}
+        assert len(args) == 3
+        assert args[0] == params["analysis_id"]
+        assert args[1] == params["connection_type"]
+        assert isinstance(args[2], dict)
+        expected: dict[str, object] = {
+            "references": [
+                {"object": "Upper", "sub_element": "Face3"},
+                {"object": "Lower", "sub_element": "Face7"},
+            ],
+        }
+        if params["connection_type"] == "tie":
+            expected.update({"tolerance_m": 0.0, "adjust": False})
+        else:
+            expected["surface_behavior"] = "hard"
+        assert args[2] == expected
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"action": "add", "analysis_id": "Analysis", "connection_type": "tie"},
+        {
+            **_addon_tie_params(),
+            "tolerance_m": None,
+        },
+        {
+            **_addon_tie_params(),
+            "adjust": None,
+        },
+        {
+            **_addon_tie_params(),
+            "surface_behavior": "hard",
+        },
+        {
+            **_addon_contact_params(),
+            "tolerance_m": 0.1,
+        },
+        {
+            **_addon_contact_params(),
+            "adjust": False,
+        },
+        {
+            **_addon_contact_params(),
+            "surface_behavior": "linear",
+        },
+        {
+            **_addon_contact_params(),
+            "surface_behavior": True,
+        },
+        {
+            **_addon_tie_params(),
+            "connection_type": "bonded",
+        },
+        {
+            **_addon_tie_params(),
+            "connection_type": True,
+        },
+        {
+            **_addon_tie_params(),
+            "code": "exec(1)",
+        },
+        {
+            **_addon_contact_params(),
+            "friction_coefficient": 0.2,
+        },
+        {
+            **_addon_contact_params(),
+            "slope": 1.0,
+        },
+        {
+            **_addon_contact_params(),
+            "thermal_conductance": [1.0],
+        },
+        {
+            **_addon_contact_params(),
+            "parameters": {"surface_behavior": "hard"},
+        },
+        {
+            **_addon_contact_params(),
+            "kind": "contact",
+        },
+        {
+            **_addon_contact_params(),
+            "action": "__import__",
+        },
+    ],
+)
+def test_addon_rejects_connection_variant_confusion_before_dispatch(
+    params: dict[str, object],
+) -> None:
+    service, operations = _service()
+    before = len(operations.connection_calls)
+    with pytest.raises(ServiceError):
+        service(Request(700, "connection", params))
+    assert len(operations.connection_calls) == before
+
+
+@pytest.mark.parametrize("field", ("tolerance_m", "adjust"))
+def test_addon_tie_requires_variant_controls_before_dispatch(field: str) -> None:
+    service, operations = _service()
+    params = _addon_tie_params()
+    params.pop(field)
+    before = len(operations.connection_calls)
+    with pytest.raises(ServiceError):
+        service(Request(725, "connection", params))
+    assert len(operations.connection_calls) == before
+
+
+@pytest.mark.parametrize("field", ("tolerance_m", "adjust"))
+def test_addon_contact_forbids_present_tie_controls_before_dispatch(field: str) -> None:
+    service, operations = _service()
+    params = _addon_contact_params()
+    params[field] = None
+    before = len(operations.connection_calls)
+    with pytest.raises(ServiceError):
+        service(Request(726, "connection", params))
+    assert len(operations.connection_calls) == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("tolerance_m", -0.1),
+        ("tolerance_m", 1e6 + 0.1),
+        ("tolerance_m", True),
+        ("tolerance_m", "1 m"),
+        ("tolerance_m", math.nan),
+        ("tolerance_m", math.inf),
+        ("adjust", 0),
+        ("adjust", 1),
+        ("adjust", "false"),
+        ("adjust", math.nan),
+    ],
+)
+def test_addon_rejects_bad_tie_tolerance_and_adjust_before_dispatch(
+    field: str, value: object,
+) -> None:
+    service, operations = _service()
+    params = _addon_tie_params()
+    params[field] = value
+    before = len(operations.connection_calls)
+    with pytest.raises(ServiceError):
+        service(Request(750, "connection", params))
+    assert len(operations.connection_calls) == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("slave", {"object_name": "Upper", "subelements": []}),
+        ("slave", {"object_name": "Upper", "subelements": ["Face1", "Face2"]}),
+        ("slave", {"object_name": "Upper", "subelements": ["Edge1"]}),
+        ("slave", {"object_name": "Upper", "subelements": ["Face0"]}),
+        ("slave", {"object_name": "Upper", "subelements": ["Face1"], "kind": "Face"}),
+        ("master", {"object_name": "Lower", "subelements": []}),
+        ("master", {"object_name": "Lower", "subelements": ["Vertex1"]}),
+        ("master", {"object_name": "Lower", "subelements": ["Face0"]}),
+        ("master", {"object_name": "Lower", "subelements": ["Face1", "Face2"]}),
+    ],
+)
+def test_addon_rejects_non_face_or_stale_connection_references_before_dispatch(
+    field: str, value: object,
+) -> None:
+    service, operations = _service()
+    params = _addon_tie_params()
+    params[field] = value
+    before = len(operations.connection_calls)
+    with pytest.raises(ServiceError):
+        service(Request(800, "connection", params))
+    assert len(operations.connection_calls) == before
+
+
+def test_addon_rejects_same_connection_face_before_dispatch() -> None:
+    service, operations = _service()
+    params = _addon_tie_params()
+    params["master"] = {"object_name": "Upper", "subelements": ["Face3"]}
+    before = len(operations.connection_calls)
+    with pytest.raises(ServiceError):
+        service(Request(801, "connection", params))
+    assert len(operations.connection_calls) == before
 
 
 def _addon_supported_amplitude_cases() -> tuple[tuple[str, dict[str, object], str], ...]:
@@ -1854,6 +2384,18 @@ _ROUTE_CASES: tuple[tuple[tuple[str, str], dict[str, object]], ...] = (
         {"action": "add", "analysis_id": "Analysis", "constraint_type": "fixed"},
     ),
     (
+        ("connection", "add"),
+        {
+            "action": "add",
+            "analysis_id": "Analysis",
+            "connection_type": "tie",
+            "slave": {"object_name": "Upper", "subelements": ["Face3"]},
+            "master": {"object_name": "Lower", "subelements": ["Face7"]},
+            "tolerance_m": 0.0,
+            "adjust": False,
+        },
+    ),
+    (
         ("load", "add"),
         {
             "action": "add",
@@ -1906,7 +2448,7 @@ def test_addon_status_advertises_all_analysis_types_and_route_parity() -> None:
         "frequency",
         "buckling",
     }
-    assert len(_ROUTE_CASES) == 22
+    assert len(_ROUTE_CASES) == 23
     assert {pair for pair, _base in _ROUTE_CASES} == set(PUBLIC_TOOL_ACTIONS.values())
 
 

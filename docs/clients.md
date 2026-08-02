@@ -118,6 +118,10 @@ force、pressure、displacement、remote load / displacementには`amplitude`を
 `analysis_type=buckling`、`buckling_factors`（1〜100）、`buckling_accuracy`（0より大きく
 1以下）を指定します。frequencyには密度、bucklingには支持と荷重が必要です。
 
+TieとContactは`add_connection`を使い、`slave`と`master`へ実在するFaceを各1面指定します。
+Tieは`tolerance_m`と`adjust`が必須です。初期Contactは`surface_behavior=hard`だけを許可し、
+frictionless・non-thermal・static解析に限定します。同一面、stale参照、Edge/Vertexは拒否します。
+
 拘束対象を明示的に呼ぶ場合、`targets`の要素は次の形です。`object_id`ではなく`object_name`を使用します。
 
 ```json

@@ -39,6 +39,7 @@ BRIDGE_METHODS = frozenset(
         "remote_load",
         "remote_displacement",
         "boundary_condition",
+        "connection",
         "mesh",
         "validate",
         "jobs",

@@ -42,6 +42,13 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
         },
         {"action"},
     ),
+    ("connection", "add"): (
+        {
+            "action", "document_id", "analysis_id", "connection_type",
+            "slave", "master", "tolerance_m", "adjust", "surface_behavior",
+        },
+        {"action", "analysis_id", "connection_type", "slave", "master"},
+    ),
     ("material", "assign"): (
         {
             "action", "document_id", "analysis_id", "material_id", "name",
@@ -240,6 +247,9 @@ class FEMService:
                 raise ServiceError("solver is unsupported")
             cls._validate_analysis_options(params)
             return
+        if method == "connection":
+            cls._validate_connection_contract(params)
+            return
         if method == "material":
             cls._require_identifier(params, "analysis_id")
             cls._optional_text(params, "material_id")
@@ -345,6 +355,97 @@ class FEMService:
         if any(value is not None for value in frequency_fields):
             raise ServiceError("buckling analysis does not accept frequency fields")
 
+    @classmethod
+    def _validate_connection_target(cls, value: Any, name: str) -> tuple[str, str]:
+        """Validate one closed EntityRef containing exactly one FaceN."""
+
+        if not isinstance(value, Mapping) or set(value) != {"object_name", "subelements"}:
+            raise ServiceError("{} must contain exactly object_name and subelements".format(name))
+        object_name = value.get("object_name")
+        if (
+            not isinstance(object_name, str)
+            or not object_name.strip()
+            or len(object_name) > 256
+            or "\x00" in object_name
+        ):
+            raise ServiceError("{} object_name is invalid".format(name))
+        subelements = value.get("subelements")
+        if not isinstance(subelements, list) or len(subelements) != 1:
+            raise ServiceError("{} must contain exactly one face".format(name))
+        subelement = subelements[0]
+        if not isinstance(subelement, str) or not subelement.startswith("Face"):
+            raise ServiceError("{} must use FaceN".format(name))
+        suffix = subelement[4:]
+        if (
+            not suffix
+            or not suffix.isascii()
+            or not suffix.isdigit()
+            or int(suffix) <= 0
+            or (len(suffix) > 1 and suffix.startswith("0"))
+        ):
+            raise ServiceError("{} must use FaceN".format(name))
+        return object_name, subelement
+
+    @classmethod
+    def _validate_connection_contract(cls, params: Mapping[str, Any]) -> None:
+        connection_type = params.get("connection_type")
+        if not isinstance(connection_type, str) or connection_type not in {"tie", "contact"}:
+            raise ServiceError("connection_type is unsupported")
+        slave_name, slave_face = cls._validate_connection_target(params.get("slave"), "slave")
+        master_name, master_face = cls._validate_connection_target(params.get("master"), "master")
+        if slave_name == master_name and slave_face == master_face:
+            raise ServiceError("slave and master faces must be distinct")
+
+        if connection_type == "tie":
+            if "surface_behavior" in params:
+                raise ServiceError("surface_behavior is unsupported for tie")
+            if "tolerance_m" not in params or params["tolerance_m"] is None:
+                raise ServiceError("tolerance_m is required for tie")
+            tolerance = cls._finite_value(
+                params["tolerance_m"], "tolerance_m", strict_numeric=True
+            )
+            if not 0.0 <= tolerance <= 1e6:
+                raise ServiceError("tolerance_m is outside the allowed range")
+            if "adjust" not in params or params["adjust"] is None:
+                raise ServiceError("adjust is required for tie")
+            cls._strict_bool(params["adjust"], "adjust")
+            return
+
+        # Initial contact exposure is deliberately hard, frictionless, and
+        # non-thermal.  Keeping this discriminator closed avoids forwarding
+        # unsupported native contact controls through the bridge.
+        if params.get("surface_behavior") != "hard":
+            raise ServiceError("surface_behavior must be hard for contact")
+        for forbidden in ("tolerance_m", "adjust"):
+            if forbidden in params:
+                raise ServiceError("{} is unsupported for contact".format(forbidden))
+
+    @classmethod
+    def _connection_data(cls, params: Mapping[str, Any]) -> dict[str, Any]:
+        cls._validate_connection_contract(params)
+        data: dict[str, Any] = {
+            "references": [
+                {
+                    "object": params["slave"]["object_name"],
+                    "sub_element": params["slave"]["subelements"][0],
+                },
+                {
+                    "object": params["master"]["object_name"],
+                    "sub_element": params["master"]["subelements"][0],
+                },
+            ]
+        }
+        if params["connection_type"] == "tie":
+            if "tolerance_m" in params and params["tolerance_m"] is not None:
+                data["tolerance_m"] = cls._finite_value(
+                    params["tolerance_m"], "tolerance_m", strict_numeric=True
+                )
+            if "adjust" in params:
+                data["adjust"] = params["adjust"]
+        else:
+            data["surface_behavior"] = "hard"
+        return data
+
     def _validate_constraint_contract(self, params: Mapping[str, Any]) -> None:
         # Keep the documented legacy target aliases, but do not permit an
         # arbitrary native property/name/code field through this compatibility
@@ -415,7 +516,7 @@ class FEMService:
                         "remote_force", "remote_moment",
                     ],
                     "boundary_conditions": ["fixed", "displacement", "remote_displacement"],
-                    "connections": [],
+                    "connections": ["tie", "contact"],
                     "mpc_types": [],
                     "result_kinds": ["displacement", "stress", "strain", "von_mises", "reaction"],
                 },
@@ -517,6 +618,14 @@ class FEMService:
             remote = self._validate_remote_displacement_request(params)
             result = self.operations.add_remote_displacement(params["analysis_id"], remote)
             return {"remote_displacement_id": result["name"], **result}
+
+        if method == "connection":
+            self._action(params, "add")
+            connection = self._connection_data(params)
+            result = self.operations.add_connection(
+                params["analysis_id"], params["connection_type"], connection
+            )
+            return {"connection_id": result["name"], **result}
 
         if method == "mesh":
             self._action(params, "create")

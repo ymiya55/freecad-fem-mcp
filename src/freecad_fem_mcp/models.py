@@ -10,6 +10,7 @@ code, paths, resources, or processes.
 from __future__ import annotations
 
 import math
+import re
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -112,6 +113,9 @@ AnalysisFrequencyHz = Annotated[
 BucklingFactors = Annotated[StrictInt, Field(ge=1, le=100)]
 BucklingAccuracy = Annotated[
     StrictFloat, Field(gt=0.0, le=1.0), AfterValidator(_finite)
+]
+ConnectionToleranceM = Annotated[
+    StrictFloat, Field(ge=0.0, le=1e6), AfterValidator(_finite)
 ]
 
 
@@ -736,6 +740,45 @@ class AddBoundaryConditionRequest(_AmplitudeRequestModel):
         return self
 
 
+class AddConnectionRequest(StrictModel):
+    """Closed tie/contact connection contract for two single-face entities."""
+
+    document_id: BoundedText | None = None
+    analysis_id: BoundedText
+    connection_type: Literal["tie", "contact"]
+    slave: EntityRef
+    master: EntityRef
+    tolerance_m: ConnectionToleranceM | None = None
+    adjust: StrictBool | None = None
+    surface_behavior: Literal["hard"] | None = None
+
+    @model_validator(mode="after")
+    def validate_connection_variant(self) -> "AddConnectionRequest":
+        face_pattern = re.compile(r"^Face[1-9][0-9]*$")
+        references = (("slave", self.slave), ("master", self.master))
+        for label, reference in references:
+            if len(reference.subelements) != 1 or not face_pattern.fullmatch(reference.subelements[0]):
+                raise ValueError("{} must contain exactly one FaceN subelement".format(label))
+        slave_face = (self.slave.object_name, self.slave.subelements[0])
+        master_face = (self.master.object_name, self.master.subelements[0])
+        if slave_face == master_face:
+            raise ValueError("slave and master must refer to different faces")
+
+        if self.connection_type == "tie":
+            if self.tolerance_m is None:
+                raise ValueError("tolerance_m is required for tie connections")
+            if self.adjust is None:
+                raise ValueError("adjust is required for tie connections")
+            if self.surface_behavior is not None:
+                raise ValueError("surface_behavior is not valid for tie connections")
+        else:
+            if self.surface_behavior != "hard":
+                raise ValueError("surface_behavior='hard' is required for contact connections")
+            if self.tolerance_m is not None or self.adjust is not None:
+                raise ValueError("tolerance_m and adjust are not valid for contact connections")
+        return self
+
+
 class CreateMeshRequest(StrictModel):
     document_id: BoundedText | None = None
     analysis_id: BoundedText
@@ -806,6 +849,7 @@ REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "remote_load": AddRemoteLoadRequest,
     "remote_displacement": AddRemoteDisplacementRequest,
     "boundary_condition": AddBoundaryConditionRequest,
+    "connection": AddConnectionRequest,
     "mesh": MeshRequest,
     "validate": ValidateRequest,
     "jobs": JobsRequest,
@@ -827,6 +871,7 @@ PUBLIC_REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "add_remote_load": AddRemoteLoadRequest,
     "add_remote_displacement": AddRemoteDisplacementRequest,
     "add_boundary_condition": AddBoundaryConditionRequest,
+    "add_connection": AddConnectionRequest,
     "create_mesh": CreateMeshRequest,
     "validate_analysis": ValidateAnalysisRequest,
     "start_analysis": StartAnalysisRequest,
@@ -868,6 +913,7 @@ AddLoadInput = AddLoadParams = AddLoadRequest
 AddRemoteLoadInput = AddRemoteLoadParams = AddRemoteLoadRequest
 AddRemoteDisplacementInput = AddRemoteDisplacementParams = AddRemoteDisplacementRequest
 AddBoundaryConditionInput = AddBoundaryConditionParams = AddBoundaryConditionRequest
+AddConnectionInput = AddConnectionParams = AddConnectionRequest
 CreateMeshInput = CreateMeshParams = CreateMeshRequest
 ValidateAnalysisInput = ValidateAnalysisParams = ValidateAnalysisRequest
 StartAnalysisInput = StartAnalysisParams = StartAnalysisRequest
@@ -924,6 +970,9 @@ __all__ = [
     "AddBoundaryConditionRequest",
     "AddBoundaryConditionInput",
     "AddBoundaryConditionParams",
+    "AddConnectionRequest",
+    "AddConnectionInput",
+    "AddConnectionParams",
     "CreateMeshRequest",
     "CreateMeshInput",
     "CreateMeshParams",
@@ -954,6 +1003,7 @@ __all__ = [
     "AnalysisFrequencyHz",
     "BucklingAccuracy",
     "BucklingFactors",
+    "ConnectionToleranceM",
     "CaptureRequest",
     "CaptureInput",
     "CaptureParams",

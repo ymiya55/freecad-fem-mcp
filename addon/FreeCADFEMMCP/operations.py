@@ -604,6 +604,139 @@ class FreeCADOperations:
         return {"name": self._object_id(obj), "kind": kind}
 
     @staticmethod
+    def _connection_factory(objects_fem: Any, helper: str, doc: Any, name: str) -> Any:
+        """Create a tie/contact object only through its verified FEM factory."""
+
+        factory = getattr(objects_fem, helper, None) if objects_fem is not None else None
+        if not callable(factory):
+            raise OperationError("native connection factory is unavailable: {}".format(helper))
+        try:
+            obj = factory(doc, name)
+        except Exception as exc:
+            raise OperationError("native connection factory failed: {}".format(helper)) from exc
+        if obj is None:
+            raise OperationError("native connection factory returned no object")
+        return obj
+
+    @staticmethod
+    def _set_connection_property(obj: Any, name: str, value: Any) -> None:
+        try:
+            if not hasattr(obj, name):
+                raise OperationError("native connection property is unavailable: {}".format(name))
+            setattr(obj, name, value)
+        except OperationError:
+            raise
+        except Exception as exc:
+            raise OperationError("native connection property cannot be set: {}".format(name)) from exc
+
+    @classmethod
+    def _validate_connection_faces(cls, references: list[tuple[Any, str]]) -> None:
+        """Require two distinct, live native FaceN references in slave/master order."""
+
+        if not isinstance(references, list) or len(references) != 2:
+            raise OperationError("connection requires exactly one slave and one master face")
+        first_obj, first_face = references[0]
+        second_obj, second_face = references[1]
+        for subelement in (first_face, second_face):
+            if not isinstance(subelement, str) or not subelement.startswith("Face"):
+                raise OperationError("connection references must use FaceN")
+            suffix = subelement[4:]
+            if (
+                not suffix
+                or not suffix.isascii()
+                or not suffix.isdigit()
+                or int(suffix) <= 0
+                or (len(suffix) > 1 and suffix.startswith("0"))
+            ):
+                raise OperationError("connection references must use FaceN")
+        if (
+            first_obj is second_obj
+            and first_face == second_face
+        ) or (
+            cls._object_id(first_obj) == cls._object_id(second_obj)
+            and first_face == second_face
+        ):
+            raise OperationError("slave and master faces must be distinct")
+        # Reuse the native Shape/getElement checks for stale references and
+        # verify the actual TopoShape type, rather than trusting FaceN text.
+        cls._validate_remote_references(references)
+
+    @classmethod
+    def _validate_connection_references(cls, references: list[tuple[Any, str]]) -> None:
+        """Compatibility name for callers performing native pre-validation."""
+
+        cls._validate_connection_faces(references)
+
+    @staticmethod
+    def _analysis_solver(analysis_obj: Any) -> Any:
+        for member in list(getattr(analysis_obj, "Group", []) or []):
+            if FreeCADOperations.fem_type(member) == "Fem::SolverCalculiX":
+                return member
+        raise OperationError("analysis has no CalculiX solver")
+
+    def add_connection(
+        self, analysis: str, kind: str, params: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Create a native tie or hard-contact connection.
+
+        ``references`` always contains ``(slave, master)`` in that order;
+        this is preserved for CalculiX's dependent/independent writer order.
+        """
+
+        doc = self._document()
+        analysis_obj = self._find(doc, analysis)
+        if not isinstance(kind, str) or kind not in {"tie", "contact"}:
+            raise OperationError("unsupported connection kind")
+        if not isinstance(params, Mapping):
+            raise OperationError("connection parameters must be an object")
+        solver = self._analysis_solver(analysis_obj)
+        analysis_type = str(getattr(solver, "AnalysisType", "")).strip().lower()
+        if analysis_type != "static":
+            raise OperationError("connections require a static analysis")
+
+        raw_references = params.get("references")
+        if raw_references is None:
+            # Direct callers may provide the public target aliases; bridge
+            # callers pass normalized references so object resolution remains
+            # inside this native operation boundary.
+            raw_references = [params.get("slave"), params.get("master")]
+        references = self._references(doc, raw_references)
+        self._validate_connection_references(references)
+        name = _safe_name(params.get("name"), "Constraint" + kind.title())
+
+        if kind == "tie":
+            if "tolerance_m" not in params or params["tolerance_m"] is None:
+                raise OperationError("tolerance_m is required for tie")
+            if "adjust" not in params or params["adjust"] is None:
+                raise OperationError("adjust is required for tie")
+            tolerance_m = params["tolerance_m"]
+            tolerance = self._strict_analysis_number(tolerance_m, "tolerance_m", 0.0, 1e6)
+            adjust = params["adjust"]
+            if not isinstance(adjust, bool):
+                raise OperationError("adjust must be boolean")
+            helper = "makeConstraintTie"
+        else:
+            if params.get("surface_behavior") != "hard":
+                raise OperationError("surface_behavior is unsupported")
+            if any(key in params for key in ("tolerance_m", "tolerance", "adjust")):
+                raise OperationError("tie fields are unsupported for contact")
+            helper = "makeConstraintContact"
+
+        with self._transaction(doc, "Add {} connection".format(kind)):
+            obj = self._connection_factory(self.objects_fem, helper, doc, name)
+            self._set_connection_property(obj, "References", references)
+            if kind == "tie":
+                self._set_connection_property(obj, "Tolerance", tolerance * 1000.0)
+                self._set_connection_property(obj, "Adjust", adjust)
+                self._set_connection_property(obj, "CyclicSymmetry", False)
+            else:
+                self._set_connection_property(obj, "SurfaceBehavior", "Hard")
+                self._set_connection_property(obj, "Friction", False)
+                self._set_connection_property(obj, "EnableThermalContact", False)
+            self._add_to_analysis(analysis_obj, obj)
+        return {"name": self._object_id(obj), "kind": kind}
+
+    @staticmethod
     def _remote_subshape_kind(subelement: str) -> Optional[str]:
         """Return the declared TopoShape kind for a ``Face1``-style name."""
 

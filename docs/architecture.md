@@ -20,7 +20,7 @@ MCPプロセスはFreeCADモジュールを直接importしません。Addonだ�
 
 `src/freecad_fem_mcp`は次を担当します。
 
-- 22個の固定MCPツール
+- 23個の固定MCPツール
 - Pydanticによる厳格な入力スキーマ
 - MCP tool annotation
 - 接続レコードの検証
@@ -57,6 +57,7 @@ MCPプロセスはFreeCADモジュールを直接importしません。Addonだ�
 - `Fem::FemMeshGmsh`
 - `Fem::MaterialSolid`
 - FreeCAD標準Constraint群（`Fem::ConstraintRigidBody`、selfweight、centrifugalを含む）
+- `Fem::ConstraintPython` Tieと`Fem::ConstraintContact`
 - `Fem::FemPostPipeline`
 
 静的回帰チェックにより、`Fem::SolverCcxTools`、`makeSolverCalculiXCcxTools`、`femtools.ccxtools`の導入を禁止します。

@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from freecad_fem_mcp.models import (
     AddBoundaryConditionRequest,
+    AddConnectionRequest,
     AnalysisRequest,
     AmplitudePoint,
     ConstraintRequest,
@@ -75,6 +76,38 @@ def test_analysis_variants_require_matching_solver_controls() -> None:
         CreateAnalysisRequest(analysis_type="frequency", eigenmodes_count=101)
     with pytest.raises(ValidationError):
         MeshRequest(analysis_id="Analysis", algorithm="netgen")
+
+
+def test_connection_contract_is_closed_and_face_only() -> None:
+    base = {
+        "analysis_id": "Analysis",
+        "slave": {"object_name": "Slave", "subelements": ["Face1"]},
+        "master": {"object_name": "Master", "subelements": ["Face2"]},
+    }
+    tie = AddConnectionRequest(
+        **base, connection_type="tie", tolerance_m=0.001, adjust=True
+    )
+    assert tie.connection_type == "tie"
+    contact = AddConnectionRequest(**base, connection_type="contact", surface_behavior="hard")
+    assert contact.surface_behavior == "hard"
+
+    invalid = (
+        {**base, "connection_type": "tie", "adjust": True},
+        {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True, "surface_behavior": "hard"},
+        {**base, "connection_type": "contact"},
+        {**base, "connection_type": "contact", "surface_behavior": "hard", "tolerance_m": 0.1},
+        {**base, "connection_type": "contact", "surface_behavior": "hard", "adjust": False},
+        {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True,
+         "slave": {"object_name": "Slave", "subelements": ["Edge1"]}},
+        {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True,
+         "slave": {"object_name": "Slave", "subelements": ["Face1", "Face2"]}},
+        {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True,
+         "master": {"object_name": "Slave", "subelements": ["Face1"]}},
+        {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True, "friction": 0.2},
+    )
+    for params in invalid:
+        with pytest.raises(ValidationError):
+            AddConnectionRequest(**params)
 
 
 def test_constraint_targets_are_explicit_and_empty_is_selection() -> None:

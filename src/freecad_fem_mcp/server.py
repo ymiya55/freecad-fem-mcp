@@ -34,6 +34,7 @@ from .bridge import (
 )
 from .models import (
     AddBoundaryConditionRequest,
+    AddConnectionRequest,
     AddConstraintRequest,
     AddLoadRequest,
     AddRemoteDisplacementRequest,
@@ -50,6 +51,7 @@ from .models import (
     CentrifugalFrequencyHz,
     CreateAnalysisRequest,
     CreateMeshRequest,
+    ConnectionToleranceM,
     EntityRef,
     EigenmodesCount,
     FiniteFloat,
@@ -90,6 +92,7 @@ TOOL_NAMES = (
     "add_remote_load",
     "add_remote_displacement",
     "add_boundary_condition",
+    "add_connection",
     "create_mesh",
     "validate_analysis",
     "start_analysis",
@@ -115,6 +118,7 @@ PUBLIC_TOOL_ACTIONS = {
     "add_remote_load": ("remote_load", "add"),
     "add_remote_displacement": ("remote_displacement", "add"),
     "add_boundary_condition": ("boundary_condition", "add"),
+    "add_connection": ("connection", "add"),
     "create_mesh": ("mesh", "create"),
     "validate_analysis": ("validate", "validate"),
     "start_analysis": ("jobs", "start"),
@@ -610,6 +614,39 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             amplitude=amplitude,
         )
         return await invoke("boundary_condition", "add", request)
+
+    @app.tool(
+        name="add_connection",
+        description=(
+            "Add a bounded tie or hard contact connection between exactly one "
+            "slave FaceN and one master FaceN. Tie connections require finite "
+            "tolerance_m (0..1e6 m) and adjust; contact connections require "
+            "surface_behavior='hard'. Friction, slope, thermal, and arbitrary "
+            "native properties are not supported."
+        ),
+        annotations=ann(readonly=False, destructive=False),
+    )
+    async def add_connection(
+        analysis_id: BoundedText,
+        connection_type: Literal["tie", "contact"],
+        slave: EntityRef,
+        master: EntityRef,
+        document_id: BoundedText | None = None,
+        tolerance_m: ConnectionToleranceM | None = None,
+        adjust: StrictBool | None = None,
+        surface_behavior: Literal["hard"] | None = None,
+    ) -> Any:
+        request = AddConnectionRequest(
+            analysis_id=analysis_id,
+            connection_type=connection_type,
+            slave=slave,
+            master=master,
+            document_id=document_id,
+            tolerance_m=tolerance_m,
+            adjust=adjust,
+            surface_behavior=surface_behavior,
+        )
+        return await invoke("connection", "add", request)
 
     @app.tool(
         name="create_mesh",

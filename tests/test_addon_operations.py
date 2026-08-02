@@ -273,8 +273,221 @@ class _AnalysisApp:
         return ("1", "1", "3")
 
 
+class _NativeConnectionSolver:
+    TypeId = "Fem::SolverCalculiX"
+    AnalysisType = "static"
+
+
+class _NativeTie:
+    _allowed = {
+        "Name", "Label", "TypeId", "References", "Tolerance", "Adjust", "CyclicSymmetry",
+    }
+
+    def __setattr__(self, name, value):
+        if name not in self._allowed:
+            raise AssertionError("unexpected native tie property: {}".format(name))
+        object.__setattr__(self, name, value)
+
+    def __init__(self, name: str):
+        self.Name = self.Label = name
+        self.TypeId = "Fem::ConstraintTie"
+        self.References = []
+        self.Tolerance = 0.0
+        self.Adjust = False
+        self.CyclicSymmetry = False
+
+
+class _NativeContact:
+    _allowed = {
+        "Name", "Label", "TypeId", "References", "SurfaceBehavior", "Friction",
+        "EnableThermalContact",
+    }
+
+    def __setattr__(self, name, value):
+        if name not in self._allowed:
+            raise AssertionError("unexpected native contact property: {}".format(name))
+        object.__setattr__(self, name, value)
+
+    def __init__(self, name: str):
+        self.Name = self.Label = name
+        self.TypeId = "Fem::ConstraintContact"
+        self.References = []
+        self.SurfaceBehavior = "Hard"
+        self.Friction = False
+        self.EnableThermalContact = False
+
+
+class _ConnectionAnalysis:
+    TypeId = "Fem::FemAnalysis"
+
+    def __init__(self, name: str = "Analysis"):
+        self.Name = self.Label = name
+        self.Group = [_NativeConnectionSolver()]
+
+    def addObject(self, obj):
+        self.Group.append(obj)
+
+
+class _ConnectionDocument:
+    Name = "Doc"
+
+    def __init__(self):
+        self.analysis = _ConnectionAnalysis()
+        self.geometry = _Geometry()
+        self.Objects = [self.analysis, self.geometry]
+        self._objects = {"Analysis": self.analysis, "Geometry": self.geometry}
+        self.transaction_events = []
+
+    def getObject(self, name):
+        return self._objects.get(name)
+
+    def openTransaction(self, label):
+        self.transaction_events.append(("open", label))
+
+    def commitTransaction(self):
+        self.transaction_events.append(("commit",))
+
+    def abortTransaction(self):
+        self.transaction_events.append(("abort",))
+
+
+class _ConnectionApp:
+    def __init__(self):
+        self.ActiveDocument = _ConnectionDocument()
+
+    @staticmethod
+    def Version():
+        return ("1", "1", "3")
+
+
+class _ObjectsFemWithConnections:
+    @staticmethod
+    def makeConstraintTie(_doc, name):
+        return _NativeTie(name)
+
+    @staticmethod
+    def makeConstraintContact(_doc, name):
+        return _NativeContact(name)
+
+
 def _analysis_solver(app: _AnalysisApp):
     return next(item for item in app.ActiveDocument.Objects if item.TypeId == "Fem::SolverCalculiX")
+
+
+def _connection_operations(objects_fem=_ObjectsFemWithConnections):
+    app = _ConnectionApp()
+    return app, FreeCADOperations(app=app, objects_fem=objects_fem)
+
+
+def _connection_refs(*faces):
+    return [
+        {"object": "Geometry", "sub_element": face}
+        for face in faces
+    ]
+
+
+def test_tie_connection_maps_native_references_in_slave_master_order() -> None:
+    app, operations = _connection_operations()
+    result = operations.add_connection(
+        "Analysis",
+        "tie",
+        {"references": _connection_refs("Face1", "Face2"), "tolerance_m": 0.25, "adjust": True},
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert result["kind"] == "tie"
+    assert native.TypeId == "Fem::ConstraintTie"
+    assert native.References == [
+        (app.ActiveDocument.geometry, "Face1"),
+        (app.ActiveDocument.geometry, "Face2"),
+    ]
+    assert native.Tolerance == 250.0
+    assert native.Adjust is True
+    assert native.CyclicSymmetry is False
+
+
+def test_contact_connection_maps_hard_frictionless_native_properties() -> None:
+    app, operations = _connection_operations()
+    result = operations.add_connection(
+        "Analysis",
+        "contact",
+        {"references": _connection_refs("Face2", "Face1"), "surface_behavior": "hard"},
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert result["kind"] == "contact"
+    assert native.References == [
+        (app.ActiveDocument.geometry, "Face2"),
+        (app.ActiveDocument.geometry, "Face1"),
+    ]
+    assert native.SurfaceBehavior == "Hard"
+    assert native.Friction is False
+    assert native.EnableThermalContact is False
+
+
+@pytest.mark.parametrize(
+    "references",
+    [
+        _connection_refs("Face1", "Face1"),
+        _connection_refs("Face1", "Face999"),
+        _connection_refs("Face1", "Edge1"),
+        _connection_refs("Face01", "Face2"),
+    ],
+)
+def test_connection_rejects_duplicate_stale_or_non_face_references(references) -> None:
+    _app, operations = _connection_operations()
+    with pytest.raises(OperationError):
+        operations.add_connection(
+            "Analysis", "tie", {"references": references, "tolerance_m": 0.0}
+        )
+
+
+def test_connection_requires_static_solver_mode() -> None:
+    app, operations = _connection_operations()
+    app.ActiveDocument.analysis.Group[0].AnalysisType = "frequency"
+    with pytest.raises(OperationError):
+        operations.add_connection(
+            "Analysis", "tie", {
+                "references": _connection_refs("Face1", "Face2"),
+                "tolerance_m": 0.0,
+                "adjust": False,
+            }
+        )
+    assert len(app.ActiveDocument.analysis.Group) == 1
+
+
+def test_connection_missing_factory_or_property_aborts_transaction() -> None:
+    app, operations = _connection_operations(objects_fem=object())
+    with pytest.raises(OperationError):
+        operations.add_connection(
+            "Analysis", "tie", {
+                "references": _connection_refs("Face1", "Face2"),
+                "tolerance_m": 0.0,
+                "adjust": False,
+            }
+        )
+    assert app.ActiveDocument.transaction_events[-1][0] == "abort"
+    assert len(app.ActiveDocument.analysis.Group) == 1
+
+    class _TieWithoutCyclic(_NativeTie):
+        def __init__(self, name):
+            super().__init__(name)
+            object.__delattr__(self, "CyclicSymmetry")
+
+    class _ObjectsFemWithoutCyclic:
+        @staticmethod
+        def makeConstraintTie(_doc, name):
+            return _TieWithoutCyclic(name)
+
+    app, operations = _connection_operations(objects_fem=_ObjectsFemWithoutCyclic())
+    with pytest.raises(OperationError):
+        operations.add_connection(
+            "Analysis", "tie", {
+                "references": _connection_refs("Face1", "Face2"),
+                "tolerance_m": 0.0,
+                "adjust": False,
+            }
+        )
+    assert app.ActiveDocument.transaction_events[-1][0] == "abort"
+    assert len(app.ActiveDocument.analysis.Group) == 1
 
 
 def test_create_analysis_sets_frequency_native_controls_and_hz_limits() -> None:

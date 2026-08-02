@@ -56,13 +56,10 @@ FreeCAD 1.1.3の実装で、次のネイティブ機能を確認しています�
 
 ```json
 {
-  "kind": "contact",
-  "primary": {"object_name": "Upper", "subelements": ["Face3"]},
-  "secondary": {"object_name": "Lower", "subelements": ["Face7"]},
-  "parameters": {
-    "surface_behavior": "hard",
-    "friction_coefficient": 0.2
-  }
+  "connection_type": "contact",
+  "slave": {"object_name": "Upper", "subelements": ["Face3"]},
+  "master": {"object_name": "Lower", "subelements": ["Face7"]},
+  "surface_behavior": "hard"
 }
 ```
 
@@ -170,9 +167,13 @@ equal DOF、rigid coupling、周期対称など、式を直接入力しなくて
 GUI表示、事前検証、CalculiX writer、結果再現がすべて確認できた場合だけ公開します。
 
 `Fem::ConstraintTie`は2面を厳密に要求し、GUIで選択順を確認できる
-`primary`/`secondary`表現を使います。許可する初期パラメータは非負の`tolerance`と
+`slave`/`master`表現を使います。許可する初期パラメータは非負の`tolerance`と
 `adjust`に限定します。remote coupling、MPC、tieが同じ領域を重複拘束しないことも
 検査します。
+
+**R4 Tie初期実装完了:** `add_connection`の`slave`/`master`各1 Face、0〜1e6 mの
+`tolerance_m`、strict boolの`adjust`を`ConstraintTie`へnative写像しました。cyclic symmetry、
+一般MPC、remote couplingは引き続きfeature gateです。
 
 ### R5: Contact
 
@@ -184,6 +185,10 @@ GUI表示、事前検証、CalculiX writer、結果再現がすべて確認で�
 - contact stiffness、stick slope、clearance adjustmentは単位付き・有界入力
 - thermal contact、shell contact、多面自動ペアリングは初期対象外
 - 主従面の向き、初期gap/penetration、面の重複、同一面指定を事前診断
+
+**R5 Contact初期実装完了:** static 3D Face-to-Face、Hard、frictionless、non-thermalに
+限定した`ConstraintContact`を`add_connection`へ追加しました。同一面・stale Faceを拒否し、
+摩擦、linear/tied挙動、熱接触は単位付き契約と数値ベンチマーク完了までfeature gateします。
 
 ### R6: 荷重組合せと専門的な構造機能
 

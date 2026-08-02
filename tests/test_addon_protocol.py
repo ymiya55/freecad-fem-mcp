@@ -28,10 +28,103 @@ def test_allowlist_and_nested_auth_shape() -> None:
     assert parse_request_line(json.dumps({"id": 3, "method": "boundary_condition", "params": {}})).method == "boundary_condition"
     assert parse_request_line(json.dumps({"id": 4, "method": "remote_load", "params": {}})).method == "remote_load"
     assert parse_request_line(json.dumps({"id": 5, "method": "remote_displacement", "params": {}})).method == "remote_displacement"
+    assert parse_request_line(json.dumps({"id": 6, "method": "connection", "params": {}})).method == "connection"
     with pytest.raises(ProtocolError):
         parse_request_line('{"id":1,"method":"ping","params":{}}')
     with pytest.raises(ProtocolError):
         parse_request_line('{"id":1,"method":"status","params":{},"extra":1}')
+
+
+def test_connection_route_forwards_tie_and_contact_contracts() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        def __init__(self):
+            self.calls = []
+
+        def add_connection(self, analysis, kind, params):
+            self.calls.append((analysis, kind, params))
+            return {"name": "Native_" + kind}
+
+    operations = _Operations()
+    service = FEMService(
+        operations=operations,
+        selection=_Selection(),
+        jobs=object(),
+        pipeline=object(),
+    )
+    slave = {"object_name": "Upper", "subelements": ["Face3"]}
+    master = {"object_name": "Lower", "subelements": ["Face7"]}
+    tie = service(Request(80, "connection", {
+        "action": "add", "analysis_id": "Analysis", "connection_type": "tie",
+        "slave": slave, "master": master, "tolerance_m": 0.002, "adjust": True,
+    }))
+    assert tie["connection_id"] == "Native_tie"
+    assert operations.calls[-1] == (
+        "Analysis", "tie", {
+            "references": [
+                {"object": "Upper", "sub_element": "Face3"},
+                {"object": "Lower", "sub_element": "Face7"},
+            ],
+            "tolerance_m": 0.002,
+            "adjust": True,
+        },
+    )
+    contact = service(Request(81, "connection", {
+        "action": "add", "analysis_id": "Analysis", "connection_type": "contact",
+        "slave": slave, "master": master, "surface_behavior": "hard",
+    }))
+    assert contact["connection_id"] == "Native_contact"
+    assert operations.calls[-1][2]["surface_behavior"] == "hard"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"slave": {"object_name": "Upper", "subelements": ["Face1", "Face2"]}},
+        {"slave": {"object_name": "Upper", "subelements": ["Edge1"]}},
+        {"master": {"object_name": "Upper", "subelements": ["Face1"]}},
+        {"surface_behavior": "linear"},
+        {"tolerance_m": "0.1"},
+        {"adjust": 1},
+        {"extra": True},
+    ],
+)
+def test_connection_route_rejects_malformed_or_mode_specific_fields(bad) -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        @staticmethod
+        def add_connection(*_args, **_kwargs):
+            raise AssertionError("invalid connection reached native operations")
+
+    service = FEMService(
+        operations=_Operations(), selection=_Selection(), jobs=object(), pipeline=object()
+    )
+    params = {
+        "action": "add", "analysis_id": "Analysis", "connection_type": "tie",
+        "slave": {"object_name": "Upper", "subelements": ["Face1"]},
+        "master": {"object_name": "Lower", "subelements": ["Face2"]},
+    }
+    if "surface_behavior" in bad:
+        params["connection_type"] = "contact"
+    params.update(bad)
+    with pytest.raises(ServiceError):
+        service(Request(82, "connection", params))
 
 
 def test_token_auth_is_constant_time_and_not_serialized() -> None:
@@ -600,6 +693,11 @@ def test_all_public_routes_reject_unknown_direct_bridge_fields() -> None:
         ("open", {"action": "open", "path": "model.FCStd"}),
         ("save", {"action": "save"}),
         ("analysis", {"action": "create"}),
+        ("connection", {
+            "action": "add", "analysis_id": "Analysis", "connection_type": "tie",
+            "slave": {"object_name": "Upper", "subelements": ["Face1"]},
+            "master": {"object_name": "Lower", "subelements": ["Face2"]},
+        }),
         ("material", {"action": "assign", "analysis_id": "Analysis"}),
         ("constraint", {"action": "add", "analysis_id": "Analysis", "constraint_type": "fixed"}),
         ("load", {"action": "add", "analysis_id": "Analysis", "load_type": "force", "force_n": 1.0}),

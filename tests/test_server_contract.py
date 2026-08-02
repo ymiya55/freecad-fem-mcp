@@ -32,6 +32,7 @@ def test_fixed_tool_surface_has_no_generic_escape_hatches() -> None:
         "add_remote_load",
         "add_remote_displacement",
         "add_boundary_condition",
+        "add_connection",
         "create_mesh",
         "validate_analysis",
         "start_analysis",
@@ -43,6 +44,61 @@ def test_fixed_tool_surface_has_no_generic_escape_hatches() -> None:
     )
     app = create_server(FakeClient())
     assert set(get_tool_names(app)) == set(TOOL_NAMES)
+
+
+def test_connection_tool_forwards_tie_and_contact_routes() -> None:
+    client = FakeClient()
+    app = create_server(client)
+    tools = getattr(getattr(app, "_tool_manager", None), "_tools", None) or getattr(app, "_tools")
+    connection_fn = getattr(tools["add_connection"], "fn", tools["add_connection"])
+    slave = {"object_name": "Slave", "subelements": ["Face1"]}
+    master = {"object_name": "Master", "subelements": ["Face2"]}
+
+    asyncio.run(
+        connection_fn(
+            analysis_id="Analysis",
+            connection_type="tie",
+            slave=slave,
+            master=master,
+            tolerance_m=0.001,
+            adjust=True,
+        )
+    )
+    assert client.calls[-1] == (
+        "connection",
+        {
+            "action": "add",
+            "analysis_id": "Analysis",
+            "connection_type": "tie",
+            "slave": slave,
+            "master": master,
+            "tolerance_m": 0.001,
+            "adjust": True,
+        },
+    )
+
+    asyncio.run(
+        connection_fn(
+            analysis_id="Analysis",
+            connection_type="contact",
+            slave=slave,
+            master=master,
+            surface_behavior="hard",
+        )
+    )
+    assert client.calls[-1][0] == "connection"
+    assert client.calls[-1][1]["surface_behavior"] == "hard"
+    with pytest.raises(ValidationError):
+        asyncio.run(
+            connection_fn(
+                analysis_id="Analysis",
+                connection_type="contact",
+                slave=slave,
+                master=master,
+                surface_behavior="hard",
+                tolerance_m=0.1,
+            )
+        )
 
 
 def test_tool_calls_cross_only_the_generic_bridge_boundary() -> None:

@@ -104,7 +104,31 @@ def test_bridge_allow_list_includes_typed_load_operations() -> None:
         "remote_load",
         "remote_displacement",
         "boundary_condition",
+        "connection",
     }.issubset(BRIDGE_METHODS)
+
+
+def test_bridge_client_forwards_connection_route() -> None:
+    def response(line: str) -> str:
+        request = json.loads(line)
+        assert request["method"] == "connection"
+        assert request["params"]["action"] == "add"
+        assert request["params"]["connection_type"] == "tie"
+        return json.dumps({"id": request["id"], "result": {"connection_id": "Conn"}})
+
+    client = BridgeClient(FakeTransport(response), token="secret-token")
+    assert client.call(
+        "connection",
+        {
+            "action": "add",
+            "analysis_id": "Analysis",
+            "connection_type": "tie",
+            "slave": {"object_name": "Slave", "subelements": ["Face1"]},
+            "master": {"object_name": "Master", "subelements": ["Face2"]},
+            "tolerance_m": 0.001,
+            "adjust": True,
+        },
+    ) == {"connection_id": "Conn"}
 
 
 def test_windows_pid_check_uses_read_only_helper_not_os_kill(monkeypatch) -> None:
