@@ -1,0 +1,9 @@
+# Bandit configuration consumed by `bandit -c .bandit ...`.  Tests
+# intentionally construct adversarial subprocess examples and are excluded.
+exclude_dirs:
+  - tests
+  - build
+  - dist
+skips:
+  - B101
+  - B110

@@ -1,0 +1,41 @@
+# Python bytecode and test/build output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Local tooling and credentials
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+*.pem
+*.key
+*.pfx
+*.p12
+*.log
+bridge-v1.json
+
+# Windows/FreeCAD local state and installer backups
+Thumbs.db
+Desktop.ini
+freecad.log
+*.FCStd~
+*.backup-*
+FreeCADFEMMCP.backup-*/
+*.bak-*
+*.tmp-*
+.uv-cache/
+.uv-python/
