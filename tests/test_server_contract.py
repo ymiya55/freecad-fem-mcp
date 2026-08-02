@@ -1,5 +1,9 @@
 import asyncio
 
+import pytest
+from pydantic import ValidationError
+
+from freecad_fem_mcp.models import AddConstraintRequest
 from freecad_fem_mcp.server import TOOL_NAMES, create_server, get_tool_names
 
 
@@ -49,3 +53,29 @@ def test_tool_calls_cross_only_the_generic_bridge_boundary() -> None:
     assert result["method"] == "status"
     assert client.calls[0][0] == "status"
     assert client.calls[0][1]["action"] == "get"
+
+
+def test_add_constraint_targets_use_object_name_and_subelements() -> None:
+    request = AddConstraintRequest(
+        analysis_id="Analysis",
+        constraint_type="fixed",
+        targets=[{"object_name": "Cantilever", "subelements": ["Face1"]}],
+    )
+    assert request.targets[0].object_name == "Cantilever"
+    assert request.targets[0].subelements == ["Face1"]
+
+    with pytest.raises(ValidationError):
+        AddConstraintRequest(
+            analysis_id="Analysis",
+            constraint_type="fixed",
+            targets=[{"object_id": "Cantilever", "subelements": ["Face1"]}],
+        )
+
+    app = create_server(FakeClient())
+    tools = getattr(getattr(app, "_tool_manager", None), "_tools", None) or getattr(app, "_tools")
+    schema = getattr(tools["add_constraint"], "parameters", {})
+    entity_schema = schema["$defs"]["EntityRef"]
+    assert "object_name" in entity_schema["required"]
+    assert "object_id" not in entity_schema["properties"]
+    assert "Cantilever" in entity_schema["properties"]["object_name"]["description"]
+    assert "Face1" in entity_schema["properties"]["subelements"]["description"]
