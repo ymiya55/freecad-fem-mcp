@@ -152,3 +152,48 @@ def test_document_revision_is_exposed_for_safe_overwrite() -> None:
     service = FEMService(operations=operations)
     with pytest.raises(ServiceError):
         service(Request(1, "status", {"action": "get", "document_id": "Other"}))
+
+
+def test_gmsh_element_order_is_native_enum() -> None:
+    class _Obj:
+        def __init__(self, name, type_id):
+            self.Name, self.Label, self.TypeId = name, name, type_id
+            self.Group, self.Shape = [], object()
+
+        def addObject(self, obj):
+            self.Group.append(obj)
+
+    class _Doc:
+        def __init__(self):
+            self.Objects = []
+            self._objects = {}
+
+        def getObject(self, name):
+            return self._objects.get(name)
+
+        def addObject(self, type_id, name):
+            obj = _Obj(name, type_id)
+            self.Objects.append(obj)
+            self._objects[name] = obj
+            return obj
+
+    class _App:
+        def __init__(self):
+            self.ActiveDocument = _Doc()
+
+        @staticmethod
+        def Version():
+            return ("1", "1", "3")
+
+    class _ObjectsFem:
+        @staticmethod
+        def makeMeshGmsh(doc, name):
+            return doc.addObject("Fem::FemMeshGmsh", name)
+
+    app = _App()
+    app.ActiveDocument.addObject("Fem::FemAnalysis", "Analysis")
+    app.ActiveDocument.addObject("Part::Box", "Geometry")
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFem)
+    result = operations.create_mesh("Analysis", "Mesh", shape="Geometry", ElementOrder=2)
+    mesh = app.ActiveDocument.getObject(result["name"])
+    assert mesh.ElementOrder == "2nd"
