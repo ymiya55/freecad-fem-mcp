@@ -248,6 +248,37 @@ def test_boundary_condition_values_are_type_specific() -> None:
         )
 
 
+@pytest.mark.parametrize("boundary_type", ["pin"])
+def test_native_boundary_presets_have_closed_payloads(boundary_type: str) -> None:
+    request = AddBoundaryConditionRequest(analysis_id="Analysis", boundary_type=boundary_type)
+    assert request.displacement_m is None
+    assert request.axis is None
+    assert request.normal_m is None
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(
+            analysis_id="Analysis", boundary_type=boundary_type, displacement_m=[0.0, 0.0, 0.0]
+        )
+
+
+def test_roller_requires_axis_or_axis_aligned_normal() -> None:
+    assert AddBoundaryConditionRequest(
+        analysis_id="Analysis", boundary_type="roller", axis="z"
+    ).axis == "z"
+    assert AddBoundaryConditionRequest(
+        analysis_id="Analysis", boundary_type="roller", normal_m=[0.0, -1.0, 0.0]
+    ).normal_m == [0.0, -1.0, 0.0]
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(analysis_id="Analysis", boundary_type="roller")
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(
+            analysis_id="Analysis", boundary_type="roller", axis="x", normal_m=[1.0, 0.0, 0.0]
+        )
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(
+            analysis_id="Analysis", boundary_type="roller", normal_m=[1.0, 1.0, 0.0]
+        )
+
+
 def test_remote_load_requires_bounded_targets_and_nonzero_force_or_moment() -> None:
     targets = [EntityRef(object_name="Bracket", subelements=["Face1"])]
     force = AddRemoteLoadRequest(

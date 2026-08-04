@@ -708,11 +708,21 @@ class AddRemoteDisplacementRequest(_AmplitudeRequestModel):
 
 
 class AddBoundaryConditionRequest(_AmplitudeRequestModel):
-    """Add a fixed or prescribed-displacement boundary condition."""
+    """Add a native CalculiX-supported structural boundary condition.
+
+    ``pin`` and ``roller`` are closed presets over the native displacement
+    object.  The presets intentionally do not expose arbitrary native
+    properties or general MPC coefficients.
+    """
 
     document_id: BoundedText | None = None
     analysis_id: BoundedText
-    boundary_type: Literal["fixed", "displacement"]
+    boundary_type: Literal[
+        "fixed",
+        "displacement",
+        "pin",
+        "roller",
+    ]
     targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
         default_factory=list,
         description=(
@@ -727,6 +737,21 @@ class AddBoundaryConditionRequest(_AmplitudeRequestModel):
             "for boundary_type='displacement'."
         ),
     )
+    axis: Literal["x", "y", "z"] | None = Field(
+        default=None,
+        description=(
+            "Cartesian normal axis for a roller support. Exactly one axis is "
+            "required for boundary_type='roller'."
+        ),
+    )
+    normal_m: Vector3 | None = Field(
+        default=None,
+        description=(
+            "Optional unit Cartesian normal for a roller support. Only an "
+            "axis-aligned normal (one component +/-1 and the others zero) is "
+            "native-writer compatible."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_boundary_values(self) -> "AddBoundaryConditionRequest":
@@ -735,8 +760,35 @@ class AddBoundaryConditionRequest(_AmplitudeRequestModel):
                 raise ValueError("displacement_m is not valid for boundary_type='fixed'")
             if self.amplitude is not None:
                 raise ValueError("amplitude is not valid for boundary_type='fixed'")
-        elif self.displacement_m is None:
-            raise ValueError("displacement_m is required for boundary_type='displacement'")
+            if self.axis is not None or self.normal_m is not None:
+                raise ValueError("axis/normal_m are not valid for boundary_type='fixed'")
+        elif self.boundary_type == "displacement":
+            if self.displacement_m is None:
+                raise ValueError("displacement_m is required for boundary_type='displacement'")
+            if self.axis is not None or self.normal_m is not None:
+                raise ValueError("axis/normal_m are not valid for boundary_type='displacement'")
+        elif self.boundary_type == "roller":
+            if self.displacement_m is not None or self.amplitude is not None:
+                raise ValueError("roller supports do not accept displacement or amplitude")
+            if (self.axis is None) == (self.normal_m is None):
+                raise ValueError("roller requires exactly one of axis or normal_m")
+            if self.normal_m is not None:
+                nonzero = [abs(component) for component in self.normal_m if component != 0.0]
+                if len(nonzero) != 1 or nonzero[0] != 1.0:
+                    raise ValueError("normal_m must be an axis-aligned unit vector")
+        else:
+            if self.displacement_m is not None or self.amplitude is not None:
+                raise ValueError(
+                    "displacement/amplitude are not valid for boundary_type='{}'".format(
+                        self.boundary_type
+                    )
+                )
+            if self.axis is not None or self.normal_m is not None:
+                raise ValueError(
+                    "axis/normal_m are not valid for boundary_type='{}'".format(
+                        self.boundary_type
+                    )
+                )
         return self
 
 

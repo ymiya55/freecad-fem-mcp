@@ -490,6 +490,139 @@ def test_connection_missing_factory_or_property_aborts_transaction() -> None:
     assert len(app.ActiveDocument.analysis.Group) == 1
 
 
+class _BoundaryObjectsFem(_ObjectsFemWithConnections):
+    @staticmethod
+    def makeConstraintDisplacement(_doc, name):
+        return _NativeDisplacement(name)
+
+def _boundary_operations():
+    app = _ConnectionApp()
+    return app, FreeCADOperations(app=app, objects_fem=_BoundaryObjectsFem)
+
+
+def test_pin_and_roller_use_native_displacement_dof_presets() -> None:
+    app, operations = _boundary_operations()
+    pin = operations.add_constraint(
+        "Analysis", "pin", {"references": _connection_refs("Face1")}
+    )
+    pin_obj = app.ActiveDocument.analysis.Group[-1]
+    assert pin["kind"] == "pin"
+    assert (pin_obj.xFree, pin_obj.yFree, pin_obj.zFree) == (False, False, False)
+
+    roller = operations.add_constraint(
+        "Analysis", "roller", {"references": _connection_refs("Face2"), "axis": "z"}
+    )
+    roller_obj = app.ActiveDocument.analysis.Group[-1]
+    assert roller["kind"] == "roller"
+    assert (roller_obj.xFree, roller_obj.yFree, roller_obj.zFree) == (True, True, False)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "xFree", "yFree", "zFree", "x", "xDisplacement",
+        "rotxFree", "rotyFree", "rotzFree", "rotx", "rotxDisplacement",
+    ],
+)
+def test_pin_and_roller_reject_direct_dof_overrides(field: str) -> None:
+    _app, operations = _boundary_operations()
+    params = {"references": _connection_refs("Face1"), field: False}
+    if field in {"x", "xDisplacement", "rotx", "rotxDisplacement"}:
+        params[field] = 0.25
+    with pytest.raises(OperationError, match="DOF fields"):
+        operations.add_constraint("Analysis", "pin", params)
+    with pytest.raises(OperationError, match="DOF fields"):
+        roller_params = {
+            "references": _connection_refs("Face1"),
+            "axis": "x",
+            field: params[field],
+        }
+        operations.add_constraint("Analysis", "roller", roller_params)
+
+
+@pytest.mark.parametrize("subelement", ["Vertex1", "Edge1", "Face1", "Solid1"])
+def test_boundary_accepts_only_live_native_shape_subelements(subelement: str) -> None:
+    _app, operations = _boundary_operations()
+    result = operations.add_constraint(
+        "Analysis", "pin", {"references": _connection_refs(subelement)}
+    )
+    assert result["kind"] == "pin"
+
+
+def test_boundary_preserves_explicit_whole_shape_reference() -> None:
+    app, operations = _boundary_operations()
+    result = operations.add_constraint(
+        "Analysis", "pin", {"references": [{"object": "Geometry", "sub_element": ""}]}
+    )
+    assert result["kind"] == "pin"
+    assert app.ActiveDocument.analysis.Group[-1].References == [(app.ActiveDocument.geometry, "")]
+
+
+@pytest.mark.parametrize("subelement", ["Junk1", "Face999", "Face01"])
+def test_boundary_rejects_forged_or_stale_shape_subelements(subelement: str) -> None:
+    _app, operations = _boundary_operations()
+    with pytest.raises(OperationError):
+        operations.add_constraint(
+            "Analysis", "roller", {"references": _connection_refs(subelement), "axis": "x"}
+        )
+
+
+def test_validate_reports_empty_reference_zero_dof_and_rigid_motion() -> None:
+    app, operations = _boundary_operations()
+    document = app.ActiveDocument
+    document.analysis.Group.extend(
+        [
+            type(
+                "Material",
+                (),
+                {
+                    "Name": "Material",
+                    "Label": "Material",
+                    "TypeId": "App::MaterialObjectPython",
+                    "Material": {"Density": "7850 kg/m^3"},
+                },
+            )(),
+            type("Mesh", (), {"Name": "Mesh", "Label": "Mesh", "TypeId": "Fem::FemMeshGmsh"})(),
+        ]
+    )
+    displacement = _NativeDisplacement("BadDisplacement")
+    displacement.xFree = displacement.yFree = displacement.zFree = True
+    displacement.EnableAmplitude = True
+    displacement.AmplitudeValues = ["1, 0", "0, 1"]
+    document.analysis.Group.append(displacement)
+    force = type(
+        "Force",
+        (),
+        {
+            "Name": "Force",
+            "Label": "Force",
+            "TypeId": "Fem::ConstraintForce",
+            "References": [(document.geometry, "Face1")],
+            "DirectionVector": (0.0, 0.0, 0.0),
+        },
+    )()
+    document.analysis.Group.append(force)
+    result = operations.validate("Analysis")
+    assert result["valid"] is False
+    assert "constraint BadDisplacement has no references" in result["diagnostics"]
+    assert "constraint BadDisplacement constrains no degrees of freedom" in result["diagnostics"]
+    assert "constraint BadDisplacement amplitude is malformed" in result["diagnostics"]
+    assert "load Force has a zero direction" in result["diagnostics"]
+    assert "analysis may contain unconstrained rigid-body motion" in result["diagnostics"]
+
+
+@pytest.mark.parametrize("scale", ["nan", "inf", "-inf", "1000000001"])
+def test_validate_rejects_nonfinite_or_unbounded_amplitude_scale(scale: str) -> None:
+    app, operations = _boundary_operations()
+    amplitude = _NativeDisplacement("BadAmplitude")
+    amplitude.EnableAmplitude = True
+    amplitude.AmplitudeValues = ["0, {}".format(scale), "1, 1"]
+    app.ActiveDocument.analysis.Group.append(amplitude)
+
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert "constraint BadAmplitude amplitude is malformed" in diagnostics
+
+
 def test_create_analysis_sets_frequency_native_controls_and_hz_limits() -> None:
     app = _AnalysisApp()
     operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemForAnalysis)
@@ -806,6 +939,71 @@ def test_centrifugal_load_maps_axis_frequency_and_solid_references() -> None:
     assert native.References == [(app.ActiveDocument.geometry, "Solid1")]
     assert native.RotationAxis == [(app.ActiveDocument.geometry, "Edge1")]
     assert native.RotationFrequency == "50.0 Hz"
+
+
+def test_validate_centrifugal_rotation_axis_uses_native_edge_reference() -> None:
+    app = _ConnectionApp()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithCentrifugal)
+    load = _NativeCentrifugal("Centrifugal")
+    load.References = [(app.ActiveDocument.geometry, "Solid1")]
+    load.RotationAxis = [(app.ActiveDocument.geometry, "Edge1")]
+    load.RotationFrequency = "50.0 Hz"
+    app.ActiveDocument.analysis.Group.append(load)
+
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert not any("rotation axis" in str(item).lower() for item in diagnostics)
+    assert not any("zero direction" in str(item).lower() for item in diagnostics)
+
+
+@pytest.mark.parametrize(
+    "axis,expected",
+    [
+        ([("Geometry", "Edge999")], "rotation axis subelement is stale"),
+        ([("Geometry", "Face1")], "rotation axis must be an Edge"),
+    ],
+)
+def test_validate_centrifugal_rotation_axis_reports_stale_or_non_edge(axis, expected: str) -> None:
+    app = _ConnectionApp()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithCentrifugal)
+    load = _NativeCentrifugal("Centrifugal")
+    load.References = []  # Empty means all solids for the global body load.
+    load.RotationAxis = [(app.ActiveDocument.geometry, axis[0][1])]
+    load.RotationFrequency = "50.0 Hz"
+    app.ActiveDocument.analysis.Group.append(load)
+
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert "load Centrifugal " + expected in diagnostics
+
+
+def test_validate_tie_and_centrifugal_references_enforce_native_shape_kinds() -> None:
+    app = _ConnectionApp()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithCentrifugal)
+    tie = _NativeTie("Tie")
+    tie.References = [(app.ActiveDocument.geometry, "Edge1")]
+    app.ActiveDocument.analysis.Group.append(tie)
+    load = _NativeCentrifugal("Centrifugal")
+    load.References = [(app.ActiveDocument.geometry, "Face1")]
+    load.RotationAxis = [(app.ActiveDocument.geometry, "Edge1")]
+    load.RotationFrequency = "50.0 Hz"
+    app.ActiveDocument.analysis.Group.append(load)
+
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert "constraint Tie requires Face references" in diagnostics
+    assert "constraint Centrifugal requires Solid references" in diagnostics
+
+
+def test_validate_buckling_with_centrifugal_load_still_requires_density() -> None:
+    app = _ConnectionApp()
+    app.ActiveDocument.analysis.Group[0].AnalysisType = "buckling"
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithCentrifugal)
+    load = _NativeCentrifugal("Centrifugal")
+    load.References = []
+    load.RotationAxis = [(app.ActiveDocument.geometry, "Edge1")]
+    load.RotationFrequency = "50.0 Hz"
+    app.ActiveDocument.analysis.Group.append(load)
+
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert "body load requires material density" in diagnostics
 
 
 def test_centrifugal_load_rejects_stale_or_mismatched_native_subelements() -> None:

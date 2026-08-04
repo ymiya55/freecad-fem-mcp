@@ -93,6 +93,12 @@ CalculiXを実行する。完了後、変位結果を取得してGUIへ表示す
 新しい分類済みAPIを明示する場合は、固定面に`add_boundary_condition`、荷重面に
 `add_load`を使うよう指示します。重力はグローバル荷重なので`targets=[]`が有効です。
 
+`add_boundary_condition`の`pin`は並進3自由度を拘束して回転を自由にします。`roller`は
+`axis`へ`x`、`y`、`z`のいずれかを指定するか、同じ軸に平行な単位`normal_m`を指定し、
+そのglobal並進自由度だけを拘束します。FreeCADの`ConstraintPlaneRotation`は節点群を
+移動可能な同一平面に保つCalculiX MPCであり、固定基準面へのfrictionless supportや
+一般的なsymmetry supportではないため、それらの別名としては公開しません。
+
 remote force / momentは`add_remote_load`で指定します。結合領域の`targets`は1件以上を
 必須とし、`reference_point_m`はglobal座標のm、`force_n`はN、`moment_n_m`はN·mです。
 FreeCADのモード名やプロパティ名は入力しません。

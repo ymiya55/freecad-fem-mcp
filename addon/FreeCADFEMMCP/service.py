@@ -515,7 +515,9 @@ class FEMService:
                         "force", "pressure", "gravity", "acceleration", "centrifugal",
                         "remote_force", "remote_moment",
                     ],
-                    "boundary_conditions": ["fixed", "displacement", "remote_displacement"],
+                    "boundary_conditions": [
+                        "fixed", "displacement", "pin", "roller", "remote_displacement",
+                    ],
                     "connections": ["tie", "contact"],
                     "mpc_types": [],
                     "result_kinds": ["displacement", "stress", "strain", "von_mises", "reaction"],
@@ -714,8 +716,22 @@ class FEMService:
     def _references(self, targets: Any, *, strict_targets: bool = False) -> list[dict[str, str]]:
         if not targets:
             captured = self.selection.capture()
-            return [{"object": item["object"], "sub_element": sub}
-                    for item in captured["items"] for sub in item.get("sub_elements", [])]
+            references: list[dict[str, str]] = []
+            for item in captured["items"]:
+                subelements = item.get("sub_elements", [])
+                if not subelements:
+                    # FreeCAD's object-only GUI selection has no
+                    # ``SubElementNames``.  Preserve it as the same explicit
+                    # whole-shape sentinel used by EntityRef.subelements=[];
+                    # otherwise the native operation receives an empty list
+                    # and rejects the boundary.
+                    references.append({"object": item["object"], "sub_element": ""})
+                    continue
+                references.extend(
+                    {"object": item["object"], "sub_element": sub}
+                    for sub in subelements
+                )
+            return references
         if not isinstance(targets, list) or len(targets) > 128:
             raise ServiceError("targets must be a bounded list")
         references = []
@@ -729,6 +745,13 @@ class FEMService:
             subelements = target.get("subelements", [])
             if not isinstance(subelements, list) or len(subelements) > 64:
                 raise ServiceError("target subelements are invalid")
+            # An explicitly named object with [] means its whole native Shape;
+            # an omitted/empty targets list still means the current GUI
+            # selection (handled above).  Keep the distinction in the native
+            # reference sentinel instead of silently dropping the target.
+            if not subelements:
+                references.append({"object": target["object_name"], "sub_element": ""})
+                continue
             for subelement in subelements:
                 if not isinstance(subelement, str) or not subelement or len(subelement) > 256:
                     raise ServiceError("target subelement is invalid")
@@ -956,14 +979,34 @@ class FEMService:
 
     def _validate_boundary_request(self, params: Mapping[str, Any]) -> str:
         boundary_type = params.get("boundary_type")
-        if boundary_type not in {"fixed", "displacement"}:
+        supported = {"fixed", "displacement", "pin", "roller"}
+        if boundary_type not in supported:
             raise ServiceError("boundary_type is unsupported")
-        allowed = {"action", "document_id", "analysis_id", "targets", "boundary_type"}
+        allowed = {
+            "action", "document_id", "analysis_id", "targets", "boundary_type",
+            "axis", "normal_m",
+        }
         required = {"action", "analysis_id", "boundary_type"}
         if boundary_type == "displacement":
             allowed.add("displacement_m")
             allowed.add("amplitude")
             required.add("displacement_m")
+            if "axis" in params or "normal_m" in params:
+                raise ServiceError("axis/normal_m are unsupported for displacement")
+        elif boundary_type == "roller":
+            has_axis = "axis" in params
+            has_normal = "normal_m" in params
+            if has_axis == has_normal:
+                raise ServiceError("roller requires exactly one of axis or normal_m")
+            if has_axis and params.get("axis") not in {"x", "y", "z"}:
+                raise ServiceError("axis must be x, y, or z")
+            if has_normal:
+                normal = self._finite_vector(params["normal_m"], "normal_m", strict_numeric=True)
+                nonzero = [abs(component) for component in normal if component != 0.0]
+                if len(nonzero) != 1 or nonzero[0] != 1.0:
+                    raise ServiceError("normal_m must be an axis-aligned unit vector")
+        elif "axis" in params or "normal_m" in params:
+            raise ServiceError("axis/normal_m are unsupported for this boundary type")
         self._validate_fields(params, allowed, required)
         self._require_identifier(params, "analysis_id")
         if "document_id" in params:
@@ -974,6 +1017,9 @@ class FEMService:
             self._finite_vector(params["displacement_m"], "displacement_m", strict_numeric=True)
             if "amplitude" in params:
                 self._validate_amplitude(params["amplitude"])
+        elif boundary_type != "roller":
+            if "displacement_m" in params or "amplitude" in params:
+                raise ServiceError("displacement/amplitude are unsupported for this boundary type")
         return boundary_type
 
     def _validate_remote_load_request(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1182,6 +1228,22 @@ class FEMService:
             elif kind == "displacement":
                 displacement = self._finite_vector(params["displacement_m"], "displacement_m", strict_numeric=True)
                 data.update({"x": displacement[0], "y": displacement[1], "z": displacement[2], "xFree": False, "yFree": False, "zFree": False})
+            elif kind == "pin":
+                # Pin is a closed native preset.  The operation layer owns
+                # every displacement DOF; do not forward implementation
+                # fields that could let a direct/native caller override it.
+                pass
+            elif kind == "roller":
+                axis = params.get("axis")
+                if axis is None and "normal_m" in params:
+                    normal = self._finite_vector(params["normal_m"], "normal_m", strict_numeric=True)
+                    nonzero = [index for index, component in enumerate(normal) if component != 0.0]
+                    if len(nonzero) != 1 or abs(normal[nonzero[0]]) != 1.0:
+                        raise ServiceError("normal_m must be an axis-aligned unit vector")
+                    axis = "xyz"[nonzero[0]]
+                if axis not in {"x", "y", "z"}:
+                    raise ServiceError("roller requires axis or normal_m")
+                data["axis"] = axis
             if "amplitude" in params:
                 if kind not in {"force", "pressure", "displacement"}:
                     raise ServiceError("amplitude is unsupported for this constraint kind")

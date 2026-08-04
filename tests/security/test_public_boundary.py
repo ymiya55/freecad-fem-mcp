@@ -1841,6 +1841,117 @@ def test_addon_revalidates_typed_boundary_requests() -> None:
             service(Request(2, "boundary_condition", params))
 
 
+@pytest.mark.parametrize(
+    "boundary_type,extra,expected",
+    [
+        ("pin", {}, {}),
+        ("roller", {"axis": "y"}, {"axis": "y"}),
+    ],
+)
+def test_addon_accepts_native_boundary_presets(boundary_type, extra, expected) -> None:
+    service, operations = _service()
+    params = {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "boundary_type": boundary_type,
+        "targets": [],
+    }
+    params.update(extra)
+    result = service(Request(3, "boundary_condition", params))
+    assert result["boundary_condition_id"] == "Constraint"
+    assert operations.calls[-1][1] == boundary_type
+    for key, value in expected.items():
+        assert operations.calls[-1][2][key] is value
+    assert not {
+        "xFree", "yFree", "zFree", "x", "y", "z",
+        "rotxFree", "rotyFree", "rotzFree", "rotx", "roty", "rotz",
+    }.intersection(operations.calls[-1][2])
+
+
+def test_integer_json_normal_is_preserved_through_model_service_and_native_route() -> None:
+    request = AddBoundaryConditionRequest(
+        analysis_id="Analysis",
+        boundary_type="roller",
+        normal_m=[1, 0, 0],
+    )
+    service, operations = _service()
+    params = request.model_dump(exclude_none=True)
+    params["action"] = "add"
+    service(Request(7, "boundary_condition", params))
+    assert operations.calls[-1][1] == "roller"
+    assert operations.calls[-1][2]["axis"] == "x"
+    assert "normal_m" not in operations.calls[-1][2]
+
+
+def test_addon_rejects_non_native_boundary_variants_before_dispatch() -> None:
+    service, operations = _service()
+    before = len(operations.calls)
+    for extra in (
+        {"boundary_type": "roller"},
+        {"boundary_type": "roller", "axis": "q"},
+        {"boundary_type": "roller", "normal_m": [1.0, 1.0, 0.0]},
+    ):
+        params = {
+            "action": "add",
+            "analysis_id": "Analysis",
+            "targets": [],
+        }
+        params.update(extra)
+        with pytest.raises(ServiceError):
+            service(Request(4, "boundary_condition", params))
+    assert len(operations.calls) == before
+
+
+def test_explicit_empty_subelements_preserve_whole_shape_reference() -> None:
+    service, operations = _service()
+    service(
+        Request(
+            5,
+            "boundary_condition",
+            {
+                "action": "add",
+                "analysis_id": "Analysis",
+                "boundary_type": "pin",
+                "targets": [{"object_name": "Geometry", "subelements": []}],
+            },
+        )
+    )
+    assert operations.calls[-1][2]["references"] == [
+        {"object": "Geometry", "sub_element": ""}
+    ]
+
+
+def test_gui_object_only_selection_preserves_whole_shape_reference() -> None:
+    class _ObjectOnlySelection:
+        gui = None
+
+        @staticmethod
+        def capture() -> dict[str, list[object]]:
+            return {"items": [{"object": "Geometry", "sub_elements": []}]}
+
+    operations = _RecordingOperations()
+    service = FEMService(
+        operations=operations,
+        selection=_ObjectOnlySelection(),
+        jobs=object(),
+        pipeline=object(),
+    )
+    service(
+        Request(
+            6,
+            "boundary_condition",
+            {
+                "action": "add",
+                "analysis_id": "Analysis",
+                "boundary_type": "pin",
+            },
+        )
+    )
+    assert operations.calls[-1][2]["references"] == [
+        {"object": "Geometry", "sub_element": ""}
+    ]
+
+
 def _remote_request_params() -> dict[str, object]:
     return {
         "action": "add",

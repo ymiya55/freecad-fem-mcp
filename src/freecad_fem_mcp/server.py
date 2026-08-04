@@ -579,17 +579,24 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
     @app.tool(
         name="add_boundary_condition",
         description=(
-            "Add a fixed or prescribed-displacement boundary condition. Fixed "
-            "conditions take no displacement; displacement requires exactly three "
-            "displacement_m components in meters. Optional amplitude is supported "
-            "only for prescribed displacement. Targets may be empty to use the "
-            "current GUI selection."
+            "Add a native fixed, prescribed-displacement, pin, or roller "
+            "boundary condition. Fixed/preset "
+            "conditions take no displacement; displacement requires exactly "
+            "three displacement_m components in meters. Roller requires an "
+            "axis or axis-aligned normal_m. Optional amplitude is supported "
+            "only for prescribed displacement. Targets may be empty to use "
+            "the current GUI selection."
         ),
         annotations=ann(readonly=False, destructive=False),
     )
     async def add_boundary_condition(
         analysis_id: BoundedText,
-        boundary_type: Literal["fixed", "displacement"],
+        boundary_type: Literal[
+            "fixed",
+            "displacement",
+            "pin",
+            "roller",
+        ],
         document_id: BoundedText | None = None,
         targets: Annotated[
             list[EntityRef],
@@ -603,6 +610,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         ]
         | None = None,
         displacement_m: Vector3 | None = None,
+        axis: Literal["x", "y", "z"] | None = None,
+        normal_m: Vector3 | None = None,
         amplitude: Amplitude | None = None,
     ) -> Any:
         request = AddBoundaryConditionRequest(
@@ -611,6 +620,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             document_id=document_id,
             targets=targets or [],
             displacement_m=displacement_m,
+            axis=axis,
+            normal_m=normal_m,
             amplitude=amplitude,
         )
         return await invoke("boundary_condition", "add", request)

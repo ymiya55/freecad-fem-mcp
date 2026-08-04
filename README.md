@@ -25,7 +25,7 @@ FreeCAD 1.1.x の新しい `SolverCalculiX` フレームワークを、MCPクラ
 - 開いているFCStd、または許可ルート内のモデルを使用
 - GUI選択または明示的なObject/Face参照
 - 等方線形弾性材料
-- fixed / displacement / remote displacement / force / pressure / gravity・任意加速度・遠心力
+- fixed / displacement / pin / roller / remote displacement / force / pressure / gravity・任意加速度・遠心力
 - 用途別の`add_boundary_condition` / `add_load`と、移行用の`add_constraint`
 - FreeCADの`ConstraintRigidBody`によるglobal remote force / remote moment / remote displacement
 - force・pressure・displacement・remote条件のboundedなtabular amplitude
@@ -104,7 +104,7 @@ FreeCAD 1.1.xではAddonは`%APPDATA%\FreeCAD\v1-1\Mod\FreeCADFEMMCP`へ導入�
 2. 拘束を与える面をGUIで選択し、`get_selection`で確認します。
 3. `create_analysis`でAnalysisと新`SolverCalculiX`を作成します。`analysis_type`は`static`、`frequency`、`buckling`から選び、frequencyではモード数と任意の周波数上下限、bucklingでは係数数と精度を指定します。
 4. `assign_material`でPa・kg/m³単位の材料値を設定します。
-5. `add_boundary_condition`でfixedまたはdisplacementを、`add_load`でforce、pressure、gravity、accelerationまたはcentrifugalを追加します。force・pressure・displacement・remote条件には、先頭0秒かつ時刻が厳密増加する2〜256点の`amplitude`（`time_s`と無次元`scale`）を指定できます。remote force / momentには`add_remote_load`、remote displacementには`add_remote_displacement`を使い、結合領域とglobal参照点を明示します。static解析のTieまたはHard frictionless Contactは`add_connection`でslave/master Faceを各1面指定します。centrifugalは回転周波数をHz、回転軸を直線Edgeで指定します。通常荷重でtargetsを省略した場合は現在のGUI選択を使いますが、remote条件のtargetsは必須です。`add_constraint`は既存クライアントの移行用です。
+5. `add_boundary_condition`でfixed、displacement、pinまたはrollerを、`add_load`でforce、pressure、gravity、accelerationまたはcentrifugalを追加します。pinは並進3自由度を拘束して回転を自由にし、rollerはglobalのx/y/z軸または軸に平行な単位normalで指定した並進1自由度だけを拘束します。force・pressure・displacement・remote条件には、先頭0秒かつ時刻が厳密増加する2〜256点の`amplitude`（`time_s`と無次元`scale`）を指定できます。remote force / momentには`add_remote_load`、remote displacementには`add_remote_displacement`を使い、結合領域とglobal参照点を明示します。static解析のTieまたはHard frictionless Contactは`add_connection`でslave/master Faceを各1面指定します。centrifugalは回転周波数をHz、回転軸を直線Edgeで指定します。通常荷重でtargetsを省略した場合は現在のGUI選択を使いますが、remote条件のtargetsは必須です。`add_constraint`は既存クライアントの移行用です。
 6. `create_mesh`でGmshジョブを開始し、`get_job`で完了を待ちます。
 7. `validate_analysis`でFreeCAD公式のCalculiX事前検証を通します。
 8. `start_analysis`でCalculiXジョブを開始します。

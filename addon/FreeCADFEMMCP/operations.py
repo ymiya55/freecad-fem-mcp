@@ -44,10 +44,30 @@ class ValidationError(OperationError):
 _CONSTRAINT_TYPES = {
     "fixed": "Fem::ConstraintFixed",
     "displacement": "Fem::ConstraintDisplacement",
+    # Native CalculiX writes pin/roller presets through the displacement
+    # constraint's Cartesian DOF flags; no generic MPC or custom INP is used.
+    "pin": "Fem::ConstraintDisplacement",
+    "roller": "Fem::ConstraintDisplacement",
     "force": "Fem::ConstraintForce",
     "pressure": "Fem::ConstraintPressure",
     "selfweight": "Fem::ConstraintSelfWeight",
 }
+
+# Pin and roller are closed native displacement presets.  Their Cartesian and
+# rotational DOFs are owned by the preset implementation and must not be
+# supplied by direct addon callers (the public service also omits them).
+_PRESET_DOF_FIELDS = frozenset(
+    {
+        "x", "y", "z",
+        "xFree", "yFree", "zFree",
+        "xDisplacement", "yDisplacement", "zDisplacement",
+        "rotx", "roty", "rotz",
+        "rotxFree", "rotyFree", "rotzFree",
+        "rotxDisplacement", "rotyDisplacement", "rotzDisplacement",
+        "displacement_m", "translation", "translation_m",
+        "rotation", "rotation_rad",
+    }
+)
 
 
 def _finite_number(value: Any, name: str, minimum: Optional[float] = None) -> float:
@@ -456,6 +476,67 @@ class FreeCADOperations:
             references.append((self._find(doc, object_name), sub))
         return references
 
+    @staticmethod
+    def _axis_from_normal(value: Any) -> str:
+        """Normalize an axis-aligned unit normal to the native DOF axis."""
+
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            raise OperationError("normal_m must contain exactly three components")
+        components: list[float] = []
+        for component in value:
+            if isinstance(component, bool) or not isinstance(component, (int, float)):
+                raise OperationError("normal_m components must be numeric")
+            number = float(component)
+            if not math.isfinite(number):
+                raise OperationError("normal_m components must be finite")
+            components.append(number)
+        nonzero = [index for index, component in enumerate(components) if component != 0.0]
+        if len(nonzero) != 1 or abs(components[nonzero[0]]) != 1.0:
+            raise OperationError("normal_m must be an axis-aligned unit vector")
+        return "xyz"[nonzero[0]]
+
+    @staticmethod
+    def _validate_boundary_references(references: list[tuple[Any, str]]) -> None:
+        """Reject forged/stale boundary subelements before native assignment."""
+
+        if not isinstance(references, list) or not references:
+            raise OperationError("boundary requires at least one reference")
+        allowed_prefixes = ("Vertex", "Edge", "Face", "Solid")
+        for obj, subelement in references:
+            if not isinstance(subelement, str):
+                raise OperationError("boundary references must use VertexN, EdgeN, FaceN, or SolidN")
+            shape = getattr(obj, "Shape", None)
+            if subelement == "":
+                # The closed EntityRef contract reserves an empty
+                # subelements list for an explicitly named whole object.
+                is_null = getattr(shape, "isNull", None)
+                if shape is None or (callable(is_null) and is_null()) or (isinstance(is_null, bool) and is_null):
+                    raise OperationError("boundary target Shape is null")
+                continue
+            if not any(
+                subelement.startswith(prefix) for prefix in allowed_prefixes
+            ):
+                raise OperationError("boundary references must use VertexN, EdgeN, FaceN, or SolidN")
+            prefix = next(prefix for prefix in allowed_prefixes if subelement.startswith(prefix))
+            suffix = subelement[len(prefix):]
+            if (
+                not suffix
+                or not suffix.isascii()
+                or not suffix.isdigit()
+                or int(suffix) <= 0
+                or (len(suffix) > 1 and suffix.startswith("0"))
+            ):
+                raise OperationError("boundary references must use a valid subelement name")
+            getter = getattr(shape, "getElement", None) if shape is not None else None
+            if not callable(getter):
+                raise OperationError("boundary target has no resolvable Shape")
+            try:
+                element = getter(subelement)
+            except Exception as exc:
+                raise OperationError("boundary subelement does not exist") from exc
+            if element is None or str(getattr(element, "ShapeType", "")) != prefix:
+                raise OperationError("boundary subelement type does not match its name")
+
     def _vector(self, value: Any) -> Any:
         if isinstance(value, (list, tuple)) and len(value) == 3:
             values = tuple(_finite_number(item, "vector component") for item in value)
@@ -543,6 +624,14 @@ class FreeCADOperations:
         if kind not in _CONSTRAINT_TYPES:
             raise OperationError("unsupported constraint kind")
         data = dict(params or {})
+        if kind in {"pin", "roller"}:
+            preset_fields = sorted(_PRESET_DOF_FIELDS.intersection(data))
+            if preset_fields:
+                raise OperationError(
+                    "{} preset does not accept DOF fields: {}".format(
+                        kind, ", ".join(preset_fields)
+                    )
+                )
         amplitude_present = "amplitude" in data
         amplitude = data.pop("amplitude", None)
         if amplitude_present and kind not in {"force", "pressure", "displacement"}:
@@ -555,8 +644,25 @@ class FreeCADOperations:
         # selection is valid for gravity; all other constraint kinds still
         # require resolved entity references.
         references = [] if kind == "selfweight" else self._references(doc, raw_references)
+        if kind in {"fixed", "displacement", "pin", "roller"}:
+            self._validate_boundary_references(references)
+        if kind == "roller":
+            axis = data.get("axis")
+            if axis is not None and "normal_m" in data:
+                raise OperationError("roller requires exactly one of axis or normal_m")
+            if axis is None and "normal_m" in data:
+                normal = self._axis_from_normal(data["normal_m"])
+                axis = normal
+            if axis not in {"x", "y", "z"}:
+                raise OperationError("roller requires axis or axis-aligned normal_m")
+            data["axis"] = axis
+            data.pop("normal_m", None)
+        elif kind in {"fixed", "displacement", "pin"}:
+            if "axis" in data or "normal_m" in data:
+                raise OperationError("axis/normal_m are unsupported for this constraint kind")
         helper = {
             "fixed": "makeConstraintFixed", "displacement": "makeConstraintDisplacement",
+            "pin": "makeConstraintDisplacement", "roller": "makeConstraintDisplacement",
             "force": "makeConstraintForce", "pressure": "makeConstraintPressure",
             "selfweight": "makeConstraintSelfWeight",
         }[kind]
@@ -565,15 +671,19 @@ class FreeCADOperations:
             if kind != "selfweight":
                 try:
                     obj.References = references
-                except Exception:
-                    pass
+                except Exception as exc:
+                    raise OperationError("native constraint references are unavailable") from exc
             if kind == "fixed":
                 pass
-            elif kind == "displacement":
+            elif kind in {"displacement", "pin", "roller"}:
                 for axis in "xyz":
                     free_key, value_key = axis + "Free", axis
                     if free_key in data:
                         setattr(obj, free_key, bool(data[free_key]))
+                    elif kind == "pin":
+                        setattr(obj, free_key, False)
+                    elif kind == "roller":
+                        setattr(obj, free_key, axis != data["axis"])
                     if value_key in data and not bool(data.get(free_key, False)):
                         # FreeCAD 1.1.x exposes displacement values as
                         # xDisplacement/yDisplacement/zDisplacement.  The
@@ -581,6 +691,19 @@ class FreeCADOperations:
                         # must not be assigned as native properties.
                         native_key = axis + "Displacement"
                         setattr(obj, native_key, self._unit_value(data[value_key], "m", value_key))
+                    elif kind in {"pin", "roller"} and not bool(getattr(obj, free_key, True)):
+                        setattr(obj, axis + "Displacement", self._unit_value(0.0, "m", value_key))
+                # Native solid displacement constraints have rotational DOFs
+                # for beam/shell models.  Pin/roller presets leave those free;
+                # probe aliases instead of assuming the property exists on
+                # older builds or test doubles.
+                if kind in {"pin", "roller"}:
+                    for rotation_key in ("rotxFree", "rotyFree", "rotzFree"):
+                        try:
+                            if hasattr(obj, rotation_key):
+                                setattr(obj, rotation_key, True)
+                        except Exception as exc:
+                            raise OperationError("native rotation DOF is unavailable") from exc
             elif kind == "force":
                 if "force" in data:
                     obj.Force = self._unit_value(data["force"], "N", "force")
@@ -1123,7 +1246,7 @@ class FreeCADOperations:
                 number = float(str(value).strip().split()[0])
             except (TypeError, ValueError, IndexError):
                 continue
-            if math.isfinite(number) and number >= 0.0:
+            if math.isfinite(number) and number > 0.0:
                 return True
         return False
 
@@ -1157,7 +1280,7 @@ class FreeCADOperations:
                     has_load = True
                 else:
                     has_support = True
-            elif any(
+            elif cls._is_centrifugal(item, token) or any(
                 marker in token
                 for marker in (
                     "constraintforce", "constraintpressure", "constraintselfweight",
@@ -1195,6 +1318,345 @@ class FreeCADOperations:
             return list(checked)
         return [checked]
 
+    @staticmethod
+    def _constraint_token(item: Any) -> str:
+        return (
+            str(getattr(item, "TypeId", ""))
+            + " "
+            + str(getattr(getattr(item, "Proxy", None), "Type", ""))
+        ).lower()
+
+    @staticmethod
+    def _is_centrifugal(item: Any, token: str) -> bool:
+        """Identify native/scripted centrifugal loads by semantic or schema fields."""
+
+        if "constraintcentrif" in token or "centrifugal" in token:
+            return True
+        # FreeCAD's scripted object is commonly exposed as
+        # ``Fem::ConstraintPython`` with a ``ConstraintCentrif`` proxy type.
+        # Test doubles and older builds may omit the proxy, so the native
+        # RotationAxis/RotationFrequency schema is the safe fallback.
+        return (
+            "constraintpython" in token
+            and hasattr(item, "RotationAxis")
+            and hasattr(item, "RotationFrequency")
+        )
+
+    @classmethod
+    def _reference_diagnostics(cls, item: Any) -> list[str]:
+        """Check native references without mutating or raising from validation."""
+
+        token = cls._constraint_token(item)
+        if "solvercalculix" in token or "femmesh" in token or "material" in token:
+            return []
+        is_centrifugal = cls._is_centrifugal(item, token)
+        # Global body loads deliberately have no References property.
+        if "selfweight" in token and not is_centrifugal:
+            return []
+        if "constraint" not in token and "remoteload" not in token and not is_centrifugal:
+            return []
+        name = cls._object_id(item) or "constraint"
+        references = getattr(item, "References", None)
+        if references is None:
+            # Native global loads such as ConstraintCentrif can expose a
+            # different axis property instead of References; only report a
+            # missing reference when a reference-bearing object advertises it.
+            return []
+        # An empty native ``ConstraintCentrif.References`` means all solids;
+        # it is a documented global-load sentinel, not a missing target.
+        if is_centrifugal and not references:
+            return []
+        if not references:
+            return ["constraint {} has no references".format(name)]
+        diagnostics: list[str] = []
+        expected_face = (
+            "planerotation" in token
+            or "constraintcontact" in token
+            or "constrainttie" in token
+        )
+        expected_solid = is_centrifugal
+        for index, reference in enumerate(references, start=1):
+            if not isinstance(reference, (tuple, list)) or len(reference) != 2:
+                diagnostics.append("constraint {} reference {} is malformed".format(name, index))
+                continue
+            obj, subelement = reference
+            if obj is None or not isinstance(subelement, str):
+                diagnostics.append("constraint {} reference {} is empty".format(name, index))
+                continue
+            expected_kind = "Solid" if expected_solid else "Face" if expected_face else None
+            shape = getattr(obj, "Shape", None)
+            if subelement == "":
+                if expected_kind is not None:
+                    diagnostics.append(
+                        "constraint {} requires {} references".format(name, expected_kind)
+                    )
+                    continue
+                is_null = getattr(shape, "isNull", None)
+                if shape is None or (callable(is_null) and is_null()) or (isinstance(is_null, bool) and is_null):
+                    diagnostics.append("constraint {} reference {} has a null Shape".format(name, index))
+                continue
+            if expected_kind is not None:
+                prefix = expected_kind
+                suffix = subelement[len(prefix):] if subelement.startswith(prefix) else ""
+                if (
+                    not suffix
+                    or not suffix.isascii()
+                    or not suffix.isdigit()
+                    or int(suffix) <= 0
+                    or (len(suffix) > 1 and suffix.startswith("0"))
+                ):
+                    diagnostics.append(
+                        "constraint {} requires {} references".format(name, expected_kind)
+                    )
+                    continue
+            getter = getattr(shape, "getElement", None) if shape is not None else None
+            if not callable(getter):
+                diagnostics.append("constraint {} reference {} has no Shape".format(name, index))
+                continue
+            try:
+                element = getter(subelement)
+            except Exception:
+                diagnostics.append("constraint {} reference {} is stale".format(name, index))
+                continue
+            if element is None:
+                diagnostics.append("constraint {} reference {} is stale".format(name, index))
+                continue
+            if expected_kind and str(getattr(element, "ShapeType", "")) != expected_kind:
+                diagnostics.append("constraint {} requires {} references".format(name, expected_kind))
+        return diagnostics
+
+    @classmethod
+    def _constraint_dof_diagnostics(cls, item: Any) -> tuple[list[str], set[str], bool]:
+        """Return DOF diagnostics, constrained translations, and support flag."""
+
+        token = cls._constraint_token(item)
+        name = cls._object_id(item) or "constraint"
+        diagnostics: list[str] = []
+        translations: set[str] = set()
+        is_support = False
+        if "constraintfixed" in token:
+            translations.update({"x", "y", "z"})
+            is_support = True
+        elif "constraintdisplacement" in token:
+            flags = []
+            for axis in "xyz":
+                key = axis + "Free"
+                if hasattr(item, key):
+                    try:
+                        if not bool(getattr(item, key)):
+                            translations.add(axis)
+                            flags.append(False)
+                        else:
+                            flags.append(True)
+                    except Exception:
+                        diagnostics.append("constraint {} has invalid {}".format(name, key))
+            for key in ("rotxFree", "rotyFree", "rotzFree"):
+                if hasattr(item, key):
+                    try:
+                        flags.append(bool(getattr(item, key)))
+                    except Exception:
+                        diagnostics.append("constraint {} has invalid {}".format(name, key))
+            if flags and all(flags):
+                diagnostics.append("constraint {} constrains no degrees of freedom".format(name))
+            is_support = bool(translations) or bool(flags and not all(flags))
+        elif "constrainttie" in token or "constraintcontact" in token:
+            # Tie/contact joins do not ground a body and therefore cannot
+            # by themselves remove global rigid-body motion.
+            is_support = False
+        elif "constraintrigidbody" in token:
+            modes = {
+                axis: str(getattr(item, "TranslationalMode" + axis.upper(), "")).lower()
+                for axis in "xyz"
+            }
+            constrained = {
+                axis for axis, mode in modes.items() if mode in {"constraint", "displacement"}
+            }
+            translations.update(constrained)
+            is_support = bool(constrained)
+        return diagnostics, translations, is_support
+
+    @staticmethod
+    def _nonzero_vector(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, (list, tuple)):
+            values = value
+        else:
+            values = tuple(getattr(value, axis, 0.0) for axis in "xyz")
+        try:
+            return any(float(component) != 0.0 for component in values)
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    @classmethod
+    def _centrifugal_axis_diagnostics(cls, item: Any) -> list[str]:
+        """Validate a native ``ConstraintCentrif.RotationAxis`` reference."""
+
+        name = cls._object_id(item) or "load"
+        references = getattr(item, "RotationAxis", None)
+        if not isinstance(references, (list, tuple)) or len(references) != 1:
+            return ["load {} rotation axis must contain exactly one Edge reference".format(name)]
+        reference = references[0]
+        if not isinstance(reference, (tuple, list)) or len(reference) != 2:
+            return ["load {} rotation axis reference is malformed".format(name)]
+        obj, subelement = reference
+        if obj is None or not isinstance(subelement, str):
+            return ["load {} rotation axis reference is empty".format(name)]
+        declared_prefix = next(
+            (
+                prefix
+                for prefix in ("Vertex", "Edge", "Face", "Solid")
+                if subelement.startswith(prefix)
+            ),
+            None,
+        )
+        suffix = subelement[len(declared_prefix):] if declared_prefix else ""
+        if (
+            declared_prefix is None
+            or not suffix
+            or not suffix.isascii()
+            or not suffix.isdigit()
+            or int(suffix) <= 0
+            or (len(suffix) > 1 and suffix.startswith("0"))
+        ):
+            return ["load {} rotation axis must use EdgeN".format(name)]
+        shape = getattr(obj, "Shape", None)
+        getter = getattr(shape, "getElement", None) if shape is not None else None
+        if not callable(getter):
+            return ["load {} rotation axis Shape cannot resolve subelements".format(name)]
+        shape_is_null = getattr(shape, "isNull", None)
+        try:
+            if (callable(shape_is_null) and shape_is_null()) or (
+                isinstance(shape_is_null, bool) and shape_is_null
+            ):
+                return ["load {} rotation axis Shape is null".format(name)]
+        except Exception:
+            return ["load {} rotation axis Shape is invalid".format(name)]
+        try:
+            axis = getter(subelement)
+        except Exception:
+            return ["load {} rotation axis subelement is stale".format(name)]
+        if axis is None:
+            return ["load {} rotation axis subelement is stale".format(name)]
+        axis_is_null = getattr(axis, "isNull", None)
+        try:
+            if (callable(axis_is_null) and axis_is_null()) or (
+                isinstance(axis_is_null, bool) and axis_is_null
+            ):
+                return ["load {} rotation axis subelement is stale".format(name)]
+        except Exception:
+            return ["load {} rotation axis subelement is invalid".format(name)]
+        if str(getattr(axis, "ShapeType", "")) != "Edge":
+            return ["load {} rotation axis must be an Edge".format(name)]
+        curve = getattr(axis, "Curve", None)
+        curve_type = getattr(curve, "TypeId", "") if curve is not None else ""
+        if str(curve_type) != "Part::GeomLine":
+            return ["load {} rotation axis must be a straight line".format(name)]
+        return []
+
+    @staticmethod
+    def _centrifugal_frequency_diagnostics(item: Any) -> list[str]:
+        name = FreeCADOperations._object_id(item) or "load"
+        raw_frequency = getattr(item, "RotationFrequency", None)
+        try:
+            frequency = float(str(raw_frequency).strip().split()[0])
+        except (TypeError, ValueError, IndexError):
+            return ["load {} rotation frequency is invalid".format(name)]
+        if not math.isfinite(frequency) or frequency <= 0.0:
+            return ["load {} rotation frequency is invalid".format(name)]
+        return []
+
+    @classmethod
+    def _load_diagnostics(cls, item: Any) -> list[str]:
+        token = cls._constraint_token(item)
+        name = cls._object_id(item) or "load"
+        diagnostics: list[str] = []
+        if cls._is_centrifugal(item, token):
+            # RotationAxis is a native reference list, not a Cartesian vector.
+            # Treating ``[(obj, "Edge1")]`` as numeric components would report
+            # every valid centrifugal load as a zero-direction error.
+            diagnostics.extend(cls._centrifugal_axis_diagnostics(item))
+            diagnostics.extend(cls._centrifugal_frequency_diagnostics(item))
+            return diagnostics
+        if any(marker in token for marker in ("constraintforce", "constraintpressure")):
+            if "constraintforce" in token and not cls._nonzero_vector(getattr(item, "DirectionVector", None)):
+                diagnostics.append("load {} has a zero direction".format(name))
+        if "selfweight" in token:
+            direction = getattr(item, "GravityDirection", None)
+            if direction is not None and not cls._nonzero_vector(direction):
+                diagnostics.append("load {} has a zero direction".format(name))
+        return diagnostics
+
+    @classmethod
+    def _amplitude_diagnostics(cls, item: Any) -> list[str]:
+        if not bool(getattr(item, "EnableAmplitude", False)):
+            return []
+        name = cls._object_id(item) or "constraint"
+        rows = getattr(item, "AmplitudeValues", None)
+        if not isinstance(rows, (list, tuple)) or not 2 <= len(rows) <= 256:
+            return ["constraint {} amplitude is malformed".format(name)]
+        previous: Optional[float] = None
+        diagnostics: list[str] = []
+        for index, row in enumerate(rows):
+            try:
+                parts = [part.strip() for part in str(row).split(",")]
+                if len(parts) != 2:
+                    raise ValueError
+                time_s = float(parts[0])
+                scale = float(parts[1])
+                if (
+                    not math.isfinite(time_s)
+                    or not 0.0 <= time_s <= 1e12
+                    or not math.isfinite(scale)
+                    or abs(scale) > 1e9
+                    or (index == 0 and time_s != 0.0)
+                ):
+                    raise ValueError
+                if previous is not None and time_s <= previous:
+                    raise ValueError
+                previous = time_s
+            except (TypeError, ValueError, OverflowError):
+                diagnostics.append("constraint {} amplitude is malformed".format(name))
+                break
+        return diagnostics
+
+    @classmethod
+    def _constraint_overlap_diagnostics(cls, members: list[Any]) -> list[str]:
+        """Find clear duplicate fixed/DOF assignments, not speculative MPC conflicts."""
+
+        assignments: dict[tuple[str, str, str], tuple[Any, Any]] = {}
+        diagnostics: list[str] = []
+        for item in members:
+            token = cls._constraint_token(item)
+            if not any(marker in token for marker in ("constraintfixed", "constraintdisplacement")):
+                continue
+            refs = getattr(item, "References", None) or []
+            dofs = {axis for axis in "xyz" if "constraintfixed" in token or not bool(getattr(item, axis + "Free", True))}
+            for reference in refs:
+                if not isinstance(reference, (tuple, list)) or len(reference) != 2:
+                    continue
+                obj, subelement = reference
+                key_base = (str(getattr(obj, "Name", getattr(obj, "Label", ""))), str(subelement))
+                for dof in dofs:
+                    key = (*key_base, dof)
+                    value = getattr(item, dof + "Displacement", 0.0)
+                    previous = assignments.get(key)
+                    if previous is not None:
+                        previous_item, previous_value = previous
+                        try:
+                            same_value = float(str(previous_value).split()[0]) == float(str(value).split()[0])
+                        except (TypeError, ValueError, IndexError):
+                            same_value = previous_value == value
+                        if "constraintfixed" in cls._constraint_token(previous_item) or not same_value:
+                            diagnostics.append(
+                                "constraints {} and {} overlap on {} DOF".format(
+                                    cls._object_id(previous_item), cls._object_id(item), dof
+                                )
+                            )
+                    else:
+                        assignments[key] = (item, value)
+        return diagnostics
+
     def validate(self, analysis: str, strict: bool = True) -> Dict[str, Any]:
         doc = self._document()
         analysis_obj = self._find(doc, analysis)
@@ -1222,6 +1684,49 @@ class FreeCADOperations:
             if not any("Constraint" in kind for kind in kinds):
                 diagnostics.append("analysis has no constraints")
 
+        # Native-object diagnostics supplement FreeCAD's checker.  They are
+        # deliberately read-only and only report facts available through the
+        # public object schema (stale references, empty DOF sets, zero load
+        # directions, malformed amplitudes, and clear duplicate assignments).
+        support_translations: set[str] = set()
+        has_support = False
+        has_structural_load = False
+        for item in members:
+            token = self._constraint_token(item)
+            is_centrifugal = self._is_centrifugal(item, token)
+            if "solvercalculix" in token or "femmesh" in token or "material" in token:
+                continue
+            diagnostics.extend(self._reference_diagnostics(item))
+            dof_diagnostics, translations, support = self._constraint_dof_diagnostics(item)
+            diagnostics.extend(dof_diagnostics)
+            support_translations.update(translations)
+            has_support = has_support or support
+            diagnostics.extend(self._load_diagnostics(item))
+            diagnostics.extend(self._amplitude_diagnostics(item))
+            if is_centrifugal or any(
+                marker in token
+                for marker in (
+                    "constraintforce", "constraintpressure", "constraintselfweight",
+                    "constraintcentrif", "constraintcontact", "remoteload",
+                )
+            ):
+                has_structural_load = has_structural_load or is_centrifugal or any(
+                    marker in token
+                    for marker in (
+                        "constraintforce", "constraintpressure", "constraintselfweight",
+                        "constraintcentrif", "remoteload",
+                    )
+                )
+            if "constraintrigidbody" in token:
+                modes = " ".join(
+                    str(getattr(item, "TranslationalMode" + axis, "")).lower()
+                    for axis in ("X", "Y", "Z")
+                )
+                has_structural_load = has_structural_load or "load" in modes
+        diagnostics.extend(self._constraint_overlap_diagnostics(members))
+        if has_structural_load and (not has_support or len(support_translations) < 3):
+            diagnostics.append("analysis may contain unconstrained rigid-body motion")
+
         analysis_type = (
             str(getattr(solver, "AnalysisType", "static")).strip().lower()
             if solver is not None
@@ -1235,8 +1740,23 @@ class FreeCADOperations:
             ]
             if not material_members or not any(self._material_has_density(item) for item in material_members):
                 diagnostics.append("frequency analysis requires material density")
-        elif analysis_type == "buckling":
+        if analysis_type == "buckling":
             diagnostics.extend(self._buckling_member_diagnostics(members))
+        if any(
+            self._is_centrifugal(item, self._constraint_token(item))
+            or any(
+                marker in self._constraint_token(item)
+                for marker in ("constraintselfweight", "constraintcentrif")
+            )
+            for item in members
+        ):
+            material_members = [
+                item
+                for item in members
+                if "material" in (self.fem_type(item) + " " + str(getattr(item, "TypeId", ""))).lower()
+            ]
+            if not material_members or not any(self._material_has_density(item) for item in material_members):
+                diagnostics.append("body load requires material density")
         return {"valid": not diagnostics, "diagnostics": diagnostics, "analysis": self._object_id(analysis_obj), "solver": self._object_id(solver) if solver else None, "mesh": self._object_id(mesh) if mesh else None}
 
     def save_document(self, path: Optional[str] = None, overwrite: bool = False) -> Dict[str, Any]:

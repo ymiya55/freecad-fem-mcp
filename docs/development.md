@@ -92,6 +92,8 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 - 3点のtabular amplitudeを`Fem::ConstraintForce`の`EnableAmplitude` / `AmplitudeValues`へ生成し、重複時刻を拒否してrevision不変を確認
 - frequency / buckling解析を`Fem::SolverCalculiX`としてGUI生成し、無効な周波数範囲・座屈精度を拒否、密度・支持・荷重不足のstrict診断を確認
 - `add_connection`からnative TieとHard frictionless ContactをGUI生成し、同一面・stale Faceを拒否してrevision不変を確認
+- `add_boundary_condition`からnative pinとglobal Cartesian rollerを`Fem::ConstraintDisplacement`として生成し、回転自由度、参照実在性、ゼロDOF、重複拘束、剛体運動、body-load密度を事前診断
+- Codex CLI 0.146.0から認証付きMCPへ実接続し、status、文書検査、選択、GUI capture、ツール単位承認後のview操作を確認
 - 不正トークンによる解析変更を拒否し、FreeCADドキュメントが不変
 - 軸力棒の応力10.0 MPa（理論10.0 MPa、誤差0%）
 - 荷重端変位0.00473854 mm（理論0.00476190 mm、誤差0.4907%）

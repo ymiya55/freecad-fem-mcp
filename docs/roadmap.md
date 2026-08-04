@@ -130,6 +130,8 @@ rigid body/remote条件を追加します。荷重振幅とcase識別子もこ�
 - **R1.2 調査完了・feature gate:** FreeCAD 1.1.3には独立した荷重座標系、集中モーメント、面traction、線・辺荷重のnative object/writerがないため未公開。任意INPでは補完しない
 - **R1.3 完了:** `ConstraintRigidBody`によるglobal remote force / moment / displacement、selfweight写像による任意加速度、`ConstraintCentrif`による遠心力を実装し、FreeCAD 1.1.3 GUIで確認。bearingとspringはCalculiX writerがないためfeature gateを維持
 - **R1.4 完了:** force、pressure、displacement、remote条件へ2〜256点のboundedなtabular amplitudeを追加し、FreeCADの`EnableAmplitude` / `AmplitudeValues`へnative写像。独立LoadCase・複数Stepのnative object/writerはないため、case識別子・実行・組合せはfeature gateを維持
+- **R1.5 完了:** native `ConstraintDisplacement`とCalculiX `*BOUNDARY` writerを使い、pin（並進3自由度固定・回転自由）とglobal Cartesian roller（指定並進1自由度固定）を追加。explicit参照の形式・実在性、ゼロ自由度、明白な重複拘束、剛体運動、荷重方向、amplitude、body-load密度の事前診断も追加
+- **R1将来計画:** frictionless、symmetry、antisymmetry、任意法線rollerは、FreeCAD 1.1.3に固定基準面の法線変位を表すnative object/writerがないため未実装。`ConstraintPlaneRotation` / CalculiX `*MPC,PLANE`は移動可能な節点群の共面性拘束であり、これらの支持条件の代用にはしない
 
 ### R2: 固有振動と線形座屈
 
@@ -173,7 +175,8 @@ GUI表示、事前検証、CalculiX writer、結果再現がすべて確認で�
 
 **R4 Tie初期実装完了:** `add_connection`の`slave`/`master`各1 Face、0〜1e6 mの
 `tolerance_m`、strict boolの`adjust`を`ConstraintTie`へnative写像しました。cyclic symmetry、
-一般MPC、remote couplingは引き続きfeature gateです。
+plane rotationはnative object/writerがあるため後続実装対象です。equal DOF、一般線形MPC、
+true rigid/distributing couplingはnative object/writerがないため将来計画です。
 
 ### R5: Contact
 
@@ -196,6 +199,11 @@ GUI表示、事前検証、CalculiX writer、結果再現がすべて確認で�
 追加します。その後、FreeCAD 1.1.xでネイティブ対応を確認できたものからbolt
 pretension、初期応力/ひずみ、質量・慣性、damper、connector releaseを個別に追加します。
 設計基準固有の自動組合せ生成はMCP coreへ埋め込まず、検証済み係数を入力する層と分けます。
+
+**FreeCAD 1.1.3 native監査:** LoadCase・複数解析Step・Combination・Envelope、bolt
+pretension、機械的な初期応力/ひずみ、集中質量/回転慣性、damper、connector releaseには、
+新solver frameworkのnative document objectとCalculiX writerの組がありません。したがって
+R6は現行対応範囲ではすべて将来計画とし、任意INPや旧solverで補完しません。
 
 ## 受け入れ条件
 

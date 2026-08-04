@@ -119,6 +119,11 @@ DEFAULT_IGNORED_PARTS = {
     "build",
     "dist",
     "node_modules",
+    # uv's local dependency caches can contain third-party source trees.  Keep
+    # these two exact cache directory names out of repository scans without
+    # broadly excluding ordinary hidden source directories.
+    ".uv-cache",
+    ".uv-cache-local",
 }
 
 

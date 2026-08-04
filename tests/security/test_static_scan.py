@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.security_scan import scan_file
+from scripts.security_scan import scan_file, scan_repository
 
 
 def test_static_scan_detects_forbidden_constructs(tmp_path: Path) -> None:
@@ -44,3 +44,18 @@ def test_static_scan_rejects_legacy_solver_execution_symbols(tmp_path: Path) -> 
     )
     rules = {finding.rule for finding in scan_file(sample, tmp_path)}
     assert "legacy-solver-import" in rules
+
+
+def test_static_scan_ignores_only_known_uv_caches_not_hidden_source_dirs(tmp_path: Path) -> None:
+    hidden_source = tmp_path / ".hidden-source"
+    uv_cache = tmp_path / ".uv-cache"
+    uv_cache_local = tmp_path / ".uv-cache-local"
+    for directory in (hidden_source, uv_cache, uv_cache_local):
+        directory.mkdir()
+        (directory / "unsafe.py").write_text("result = eval(user_input)\n", encoding="utf-8")
+
+    findings = scan_repository(tmp_path)
+    paths = {Path(finding.path) for finding in findings}
+    assert Path(".hidden-source") / "unsafe.py" in paths
+    assert Path(".uv-cache") / "unsafe.py" not in paths
+    assert Path(".uv-cache-local") / "unsafe.py" not in paths
