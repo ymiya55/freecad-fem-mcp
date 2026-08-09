@@ -73,6 +73,7 @@ from .models import (
     ValidateRequest,
     Vector3,
     ViewRequest,
+    YieldPoint,
 )
 from .server import (
     PUBLIC_TOOL_ACTIONS,
@@ -144,6 +145,7 @@ __all__ = [
     "StatusRequest",
     "ToolResponse",
     "Vector3",
+    "YieldPoint",
     "ShowResultRequest",
     "StartAnalysisRequest",
     "TOOL_NAMES",

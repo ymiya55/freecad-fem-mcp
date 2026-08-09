@@ -7,7 +7,7 @@ import os
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, StrictBool, StrictInt
+from pydantic import Field, StrictBool, StrictFloat, StrictInt
 
 try:  # Official MCP SDK 2.x API.
     from mcp.server.mcpserver import MCPServer as FastMCP
@@ -76,6 +76,7 @@ from .models import (
     ValueList,
     ValidateAnalysisRequest,
     Vector3,
+    YieldPoint,
 )
 
 TOOL_NAMES = (
@@ -362,6 +363,14 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         frequency_high_hz: AnalysisFrequencyHz | None = None,
         buckling_factors: BucklingFactors | None = None,
         buckling_accuracy: BucklingAccuracy | None = None,
+        geometrical_nonlinearity: Literal["linear", "nonlinear"] | None = None,
+        material_nonlinearity: Literal["linear", "nonlinear"] | None = None,
+        automatic_incrementation: StrictBool | None = None,
+        time_initial_increment_s: Annotated[StrictFloat, Field(gt=0.0, le=1e9)] | None = None,
+        time_minimum_increment_s: Annotated[StrictFloat, Field(gt=0.0, le=1e9)] | None = None,
+        time_maximum_increment_s: Annotated[StrictFloat, Field(gt=0.0, le=1e9)] | None = None,
+        time_period_s: Annotated[StrictFloat, Field(gt=0.0, le=1e9)] | None = None,
+        increments_maximum: Annotated[StrictInt, Field(ge=1, le=1_000_000)] | None = None,
     ) -> Any:
         request = CreateAnalysisRequest(
             document_id=document_id,
@@ -373,6 +382,14 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             frequency_high_hz=frequency_high_hz,
             buckling_factors=buckling_factors,
             buckling_accuracy=buckling_accuracy,
+            geometrical_nonlinearity=geometrical_nonlinearity,
+            material_nonlinearity=material_nonlinearity,
+            automatic_incrementation=automatic_incrementation,
+            time_initial_increment_s=time_initial_increment_s,
+            time_minimum_increment_s=time_minimum_increment_s,
+            time_maximum_increment_s=time_maximum_increment_s,
+            time_period_s=time_period_s,
+            increments_maximum=increments_maximum,
         )
         return await invoke("analysis", "create", request)
 
@@ -390,6 +407,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         poisson_ratio: FiniteFloat | None = None,
         density_kg_m3: PositiveFiniteFloat | None = None,
         yield_strength_pa: PositiveFiniteFloat | None = None,
+        hardening_model: Literal["isotropic", "kinematic"] | None = None,
+        yield_points: Annotated[list[YieldPoint], Field(min_length=1, max_length=64)] | None = None,
     ) -> Any:
         request = AssignMaterialRequest(
             analysis_id=analysis_id,
@@ -400,6 +419,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             poisson_ratio=poisson_ratio,
             density_kg_m3=density_kg_m3,
             yield_strength_pa=yield_strength_pa,
+            hardening_model=hardening_model,
+            yield_points=yield_points,
         )
         return await invoke("material", "assign", request)
 

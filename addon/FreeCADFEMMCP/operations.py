@@ -264,6 +264,14 @@ class FreeCADOperations:
         frequency_high_hz: Any = None,
         buckling_factors: Any = None,
         buckling_accuracy: Any = None,
+        geometrical_nonlinearity: Any = "linear",
+        material_nonlinearity: Any = "linear",
+        automatic_incrementation: Any = True,
+        time_initial_increment_s: Any = None,
+        time_minimum_increment_s: Any = None,
+        time_maximum_increment_s: Any = None,
+        time_period_s: Any = None,
+        increments_maximum: Any = None,
     ) -> dict[str, Any]:
         """Validate and normalize the closed SolverCalculiX mode contract."""
 
@@ -272,10 +280,55 @@ class FreeCADOperations:
 
         frequency_fields = (eigenmodes_count, frequency_low_hz, frequency_high_hz)
         buckling_fields = (buckling_factors, buckling_accuracy)
+        if geometrical_nonlinearity not in {"linear", "nonlinear"}:
+            raise OperationError("geometrical_nonlinearity is unsupported")
+        if material_nonlinearity not in {"linear", "nonlinear"}:
+            raise OperationError("material_nonlinearity is unsupported")
+        if not isinstance(automatic_incrementation, bool):
+            raise OperationError("automatic_incrementation must be boolean")
+        time_values = {
+            "time_initial_increment_s": time_initial_increment_s,
+            "time_minimum_increment_s": time_minimum_increment_s,
+            "time_maximum_increment_s": time_maximum_increment_s,
+            "time_period_s": time_period_s,
+        }
+        supplied_times = [key for key, value in time_values.items() if value is not None]
+        if supplied_times and len(supplied_times) != len(time_values):
+            raise OperationError("all time increment controls are required together")
+        normalized_times: dict[str, float | None] = {}
+        for key, value in time_values.items():
+            if value is None:
+                normalized_times[key] = None
+            else:
+                normalized_times[key] = cls._strict_analysis_number(value, key, 1e-12, 1e9)
+        initial = normalized_times["time_initial_increment_s"]
+        minimum = normalized_times["time_minimum_increment_s"]
+        maximum = normalized_times["time_maximum_increment_s"]
+        period = normalized_times["time_period_s"]
+        if supplied_times:
+            assert initial is not None and minimum is not None and maximum is not None and period is not None
+            if minimum > initial or initial > maximum or maximum > period:
+                raise OperationError(
+                    "time controls must satisfy minimum <= initial <= maximum <= period"
+                )
+        if increments_maximum is not None:
+            if isinstance(increments_maximum, bool) or not isinstance(increments_maximum, int):
+                raise OperationError("increments_maximum must be an integer")
+            if not 1 <= increments_maximum <= 1_000_000:
+                raise OperationError("increments_maximum is outside the allowed range")
+
         if analysis_type == "static":
             if any(value is not None for value in (*frequency_fields, *buckling_fields)):
                 raise OperationError("static analysis does not accept analysis-specific fields")
         elif analysis_type == "frequency":
+            if (
+                geometrical_nonlinearity != "linear"
+                or material_nonlinearity != "linear"
+                or automatic_incrementation is not True
+                or supplied_times
+                or increments_maximum is not None
+            ):
+                raise OperationError("nonlinear/time controls are supported only for static analysis")
             if isinstance(eigenmodes_count, bool) or not isinstance(eigenmodes_count, int):
                 raise OperationError("eigenmodes_count is required for frequency analysis")
             if not 1 <= eigenmodes_count <= 100:
@@ -301,6 +354,14 @@ class FreeCADOperations:
                 # deterministic setting.
                 low = high = 0.0
         else:  # buckling
+            if (
+                geometrical_nonlinearity != "linear"
+                or material_nonlinearity != "linear"
+                or automatic_incrementation is not True
+                or supplied_times
+                or increments_maximum is not None
+            ):
+                raise OperationError("nonlinear/time controls are supported only for static analysis")
             if isinstance(buckling_factors, bool) or not isinstance(buckling_factors, int):
                 raise OperationError("buckling_factors is required for buckling analysis")
             if not 1 <= buckling_factors <= 100:
@@ -320,6 +381,11 @@ class FreeCADOperations:
             "frequency_high_hz": high if analysis_type == "frequency" else None,
             "buckling_factors": buckling_factors if analysis_type == "buckling" else None,
             "buckling_accuracy": accuracy if analysis_type == "buckling" else None,
+            "geometrical_nonlinearity": geometrical_nonlinearity,
+            "material_nonlinearity": material_nonlinearity,
+            "automatic_incrementation": automatic_incrementation,
+            **normalized_times,
+            "increments_maximum": increments_maximum,
         }
 
     @staticmethod
@@ -358,6 +424,17 @@ class FreeCADOperations:
                 pass
         return text
 
+    def _time_quantity(self, value: float) -> Any:
+        text = "{} s".format(format(value, ".17g"))
+        units = getattr(self.app, "Units", None)
+        quantity = getattr(units, "Quantity", None) if units is not None else None
+        if callable(quantity):
+            try:
+                return quantity(text)
+            except Exception:
+                pass
+        return text
+
     def create_analysis(
         self,
         name: str = "Analysis",
@@ -368,6 +445,14 @@ class FreeCADOperations:
         frequency_high_hz: Any = None,
         buckling_factors: Any = None,
         buckling_accuracy: Any = None,
+        geometrical_nonlinearity: Any = "linear",
+        material_nonlinearity: Any = "linear",
+        automatic_incrementation: Any = True,
+        time_initial_increment_s: Any = None,
+        time_minimum_increment_s: Any = None,
+        time_maximum_increment_s: Any = None,
+        time_period_s: Any = None,
+        increments_maximum: Any = None,
     ) -> Dict[str, Any]:
         doc = self._document()
         safe = _safe_name(name, "Analysis")
@@ -378,6 +463,14 @@ class FreeCADOperations:
             frequency_high_hz,
             buckling_factors,
             buckling_accuracy,
+            geometrical_nonlinearity,
+            material_nonlinearity,
+            automatic_incrementation,
+            time_initial_increment_s,
+            time_minimum_increment_s,
+            time_maximum_increment_s,
+            time_period_s,
+            increments_maximum,
         )
         with self._transaction(doc, "Create FEM analysis"):
             analysis = self._new_object(doc, "Fem::FemAnalysis", safe, "makeAnalysis")
@@ -411,12 +504,36 @@ class FreeCADOperations:
             # These controls are present on current CalculiX objects but are
             # not mode-specific.  Keep compatibility with older native builds
             # by assigning them only when available.
-            for key, value in (("GeometricalNonlinearity", "linear"), ("MaterialNonlinearity", "linear")):
+            for key, value in (
+                ("GeometricalNonlinearity", options["geometrical_nonlinearity"]),
+                ("MaterialNonlinearity", options["material_nonlinearity"]),
+            ):
                 try:
-                    if hasattr(solver, key):
+                    if value != "linear":
+                        self._set_native_required(solver, key, value)
+                    elif hasattr(solver, key):
                         setattr(solver, key, value)
                 except Exception:
-                    pass
+                    if value != "linear":
+                        raise
+            # Current FreeCAD 1.1.3 exposes one native static step.  Every
+            # supplied time/increment control is required to map to its exact
+            # native property; no arbitrary CalculiX control text is accepted.
+            if hasattr(solver, "AutomaticIncrementation"):
+                self._set_native_required(
+                    solver, "AutomaticIncrementation", options["automatic_incrementation"]
+                )
+            for option, native in (
+                ("time_initial_increment_s", "TimeInitialIncrement"),
+                ("time_minimum_increment_s", "TimeMinimumIncrement"),
+                ("time_maximum_increment_s", "TimeMaximumIncrement"),
+                ("time_period_s", "TimePeriod"),
+            ):
+                value = options[option]
+                if value is not None:
+                    self._set_native_required(solver, native, self._time_quantity(value))
+            if options["increments_maximum"] is not None:
+                self._set_native_required(solver, "IncrementsMaximum", options["increments_maximum"])
             self._add_to_analysis(analysis, solver)
         return {
             "name": self._object_id(analysis),
@@ -436,6 +553,45 @@ class FreeCADOperations:
         density = _finite_number(material.get("density_kg_m3", material.get("density", 7850.0)), "density", 0.0)
         if not -1.0 < poisson < 0.5:
             raise OperationError("poisson_ratio must be between -1 and 0.5")
+        hardening = material.get("hardening_model")
+        yield_points = material.get("yield_points")
+        if (hardening is None) != (yield_points is None):
+            raise OperationError("hardening_model and yield_points must be provided together")
+        hardening_map = {
+            "isotropic": "isotropic hardening",
+            "kinematic": "kinematic hardening",
+        }
+        if hardening is not None and hardening not in hardening_map:
+            raise OperationError("hardening_model is unsupported")
+        normalized_points: list[str] | None = None
+        if yield_points is not None:
+            if not isinstance(yield_points, list) or not 1 <= len(yield_points) <= 64:
+                raise OperationError("yield_points must contain between 1 and 64 points")
+            previous_stress = 0.0
+            previous_strain = 0.0
+            normalized_points = []
+            for index, point in enumerate(yield_points):
+                if not isinstance(point, Mapping) or set(point) != {"stress_pa", "plastic_strain"}:
+                    raise OperationError("yield point must contain exactly stress_pa and plastic_strain")
+                stress = _finite_number(point["stress_pa"], "yield point stress_pa", 0.0)
+                strain = _finite_number(point["plastic_strain"], "yield point plastic_strain", 0.0)
+                if stress > 1e15 or strain > 1e3:
+                    raise OperationError("yield point is outside the allowed range")
+                if index == 0 and strain != 0.0:
+                    raise OperationError("yield_points first plastic_strain must be exactly 0.0")
+                if stress <= previous_stress:
+                    raise OperationError("yield_points stress_pa values must be strictly increasing")
+                if strain < previous_strain:
+                    raise OperationError("yield_points plastic_strain values must be nondecreasing")
+                normalized_points.append(
+                    "{}, {}".format(format(stress / 1_000_000.0, ".12g"), format(strain, ".12g"))
+                )
+                previous_stress = stress
+                previous_strain = strain
+        solver = self._analysis_solver(analysis_obj)
+        analysis_type = str(getattr(solver, "AnalysisType", "static")).strip().lower()
+        if normalized_points is not None and analysis_type != "static":
+            raise OperationError("nonlinear materials are supported only for static analysis")
         with self._transaction(doc, "Set isotropic solid material"):
             obj = self._new_object(doc, "App::MaterialObjectPython", name, "makeMaterialSolid")
             # FreeCAD 1.1 stores isotropic material values in the Material
@@ -457,8 +613,48 @@ class FreeCADOperations:
                         setattr(obj, key, value)
                     except Exception:
                         pass
+            if normalized_points is not None:
+                factory = getattr(self.objects_fem, "makeMaterialMechanicalNonlinear", None)
+                if not callable(factory):
+                    raise OperationError("native nonlinear material factory is unavailable")
+                nonlinear_name = _safe_name(
+                    material.get("nonlinear_name"), name + "Nonlinear"
+                )
+                try:
+                    nonlinear = factory(doc, obj, nonlinear_name)
+                except Exception as exc:
+                    raise OperationError("native nonlinear material factory failed") from exc
+                self._set_native_required(
+                    nonlinear, "LinearBaseMaterial", obj
+                )
+                self._set_native_required(
+                    nonlinear,
+                    "MaterialModelNonlinearity",
+                    hardening_map[hardening],
+                )
+                self._set_native_required(nonlinear, "YieldPoints", normalized_points)
+                self._add_to_analysis(analysis_obj, obj)
+                self._add_to_analysis(analysis_obj, nonlinear)
+                # The native writer only emits *PLASTIC when this solver flag
+                # is enabled.  Set the closed enum explicitly and fail safely
+                # if the installed writer does not expose it.
+                self._set_native_required(solver, "MaterialNonlinearity", "nonlinear")
+                return {
+                    "name": self._object_id(nonlinear),
+                    "base_material": self._object_id(obj),
+                    "youngs_modulus": young,
+                    "poisson_ratio": poisson,
+                    "density": density,
+                    "hardening_model": hardening,
+                    "yield_points": normalized_points,
+                }
             self._add_to_analysis(analysis_obj, obj)
-        return {"name": self._object_id(obj), "youngs_modulus": young, "poisson_ratio": poisson, "density": density}
+        return {
+            "name": self._object_id(obj),
+            "youngs_modulus": young,
+            "poisson_ratio": poisson,
+            "density": density,
+        }
 
     def _references(self, doc: Any, raw: Any) -> list[tuple[Any, str]]:
         if not isinstance(raw, list) or not raw or len(raw) > 128:

@@ -101,6 +101,9 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 - native `FemPostPipeline`から1始まりのmodeを安全に選択し、frequencyの`frequency_hz`とbucklingの`buckling_factor`を区別して取得・表示
 - 100×10×10 mm鋼製カンチレバーの一次固有振動数834.2982 Hz（Euler理論835.5166 Hz、誤差0.146%）
 - 同じ固定自由柱の1,000 N圧縮時の一次座屈係数43.10404（Euler理論43.17952、誤差0.175%）
+- FreeCAD 1.1.3 native probeで`GeometricalNonlinearity` / `MaterialNonlinearity`、`AutomaticIncrementation`、4つの`Time*Increment` / `TimePeriod`、`IncrementsMaximum`を確認
+- `MaterialMechanicalNonlinear`を線形母材へリンクし、等方／移動硬化のbounded降伏点をnative writer契約へ写像
+- single-step時間値のall-or-noneと順序をMCP model、bridge service、FreeCAD operationの三層で検証し、native出力に明示された場合だけ収束状態と最終incrementを要約
 - `add_connection`からnative TieとHard frictionless ContactをGUI生成し、同一面・stale Faceを拒否してrevision不変を確認
 - `add_boundary_condition`からnative pinとglobal Cartesian rollerを`Fem::ConstraintDisplacement`として生成し、回転自由度、参照実在性、ゼロDOF、重複拘束、剛体運動、body-load密度を事前診断
 - Codex CLI 0.146.0から認証付きMCPへ実接続し、status、文書検査、選択、GUI capture、ツール単位承認後のview操作を確認

@@ -40,6 +40,12 @@ class JobError(RuntimeError):
 
 _MAX_DIAGNOSTIC_BYTES = 2048
 _SECRET_DIAGNOSTIC = re.compile(r"(?i)(token|secret|password|credential)\s*([:=])\s*[^\s,;]+")
+_CONVERGED_RE = re.compile(
+    r"(?i)\b(?:nonlinear\s+)?(?:analysis|solution)\s+(converged|not\s+converged|failed)\b"
+)
+_INCREMENT_RE = re.compile(
+    r"(?i)\b(?:final\s+)?(?:increment|iteration|step)\s*[:=#]?\s*(\d{1,7})\s*(?:\b|$)"
+)
 
 
 def _clip_utf8(value: str, maximum: int) -> str:
@@ -70,6 +76,45 @@ def _decode_process_bytes(value: Any) -> str:
     return _safe_diagnostic(raw.decode("utf-8", "replace"))
 
 
+def _convergence_summary(output: str, state: str) -> Optional[Dict[str, Any]]:
+    """Extract only explicit, bounded convergence markers from native output.
+
+    CalculiX output wording varies across builds.  We intentionally avoid
+    guessing from an exit code or arbitrary numeric lines: a summary is emitted
+    only when a stable known phrase is present, and increments are capped.
+    """
+
+    if not output:
+        return None
+    match = _CONVERGED_RE.search(output)
+    if match is None:
+        return None
+    convergence_word = match.group(1).lower().replace(" ", "_")
+    status = "converged" if convergence_word == "converged" else "not_converged"
+    increment = None
+    increment_match = None
+    for candidate in _INCREMENT_RE.finditer(output):
+        increment_match = candidate
+    if increment_match is not None:
+        try:
+            value = int(increment_match.group(1))
+            if 0 <= value <= 1_000_000:
+                increment = value
+        except (TypeError, ValueError, OverflowError):
+            pass
+    result: Dict[str, Any] = {
+        "status": status,
+        "source": "native_output",
+    }
+    if increment is not None:
+        result["final_increment"] = increment
+    # A process marked failed must never be reported as converged, even if a
+    # trailing diagnostic contains the word "converged".
+    if state != "completed" and status == "converged":
+        result["status"] = "not_converged"
+    return result
+
+
 @dataclass
 class Job:
     id: str
@@ -83,6 +128,7 @@ class Job:
     process: Any = None
     native_object: Any = None
     artifacts: Dict[str, str] = field(default_factory=dict)
+    convergence: Optional[Dict[str, Any]] = None
 
     def summary(self) -> Dict[str, Any]:
         return {
@@ -91,6 +137,7 @@ class Job:
             "exit_code": self.exit_code, "output": self.output[-32768:],
             "error": _safe_diagnostic(self.error) if self.error else None,
             "artifacts": dict(self.artifacts),
+            "convergence": dict(self.convergence) if self.convergence is not None else None,
         }
 
 
@@ -166,6 +213,7 @@ class QProcessJobRegistry:
                 job.exit_code = int(code)
                 job.state = "completed" if code == 0 else "failed"
                 job.finished_at = time.time()
+                job.convergence = _convergence_summary(job.output, job.state)
                 # CalculiXTools' internal finished handler imports its native
                 # FemPostPipeline before this callback runs.
                 if kind == "calculix":

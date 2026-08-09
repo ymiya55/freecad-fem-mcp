@@ -20,7 +20,7 @@ FreeCAD 1.1.x の新しい `SolverCalculiX` フレームワークを、MCPクラ
 
 ## 現在の範囲
 
-現在のリリースは既存形状に対する3D線形静解析、固有振動、線形座屈の縦切りを対象にします。
+現在のリリースは既存形状に対する3D線形・単一step非線形静解析、固有振動、線形座屈の縦切りを対象にします。
 
 - 開いているFCStd、または許可ルート内のモデルを使用
 - GUI選択または明示的なObject/Face参照
@@ -30,13 +30,14 @@ FreeCAD 1.1.x の新しい `SolverCalculiX` フレームワークを、MCPクラ
 - FreeCADの`ConstraintRigidBody`によるglobal remote force / remote moment / remote displacement
 - force・pressure・displacement・remote条件のboundedなtabular amplitude
 - `SolverCalculiX`のfrequency（モード数・周波数範囲）とbuckling（係数数・精度）
+- static解析の幾何学的非線形、native single-step時間増分、等方／移動硬化の材料非線形
 - static解析のFace-to-Face TieとHard frictionless Contact
 - FreeCAD 1.1のネイティブGmshメッシャー
 - FreeCAD 1.1のネイティブ`CalculiXTools`
 - `Fem::FemPostPipeline`による静解析frame、固有振動mode、座屈modeの結果照会とGUI表示
 - GUIビューポートまたはウィンドウのキャプチャ
 
-非線形・高度な接触、熱連成、電磁解析は同じ公開設計上で段階的に追加します。
+複数step・高度な接触、熱連成、電磁解析は同じ公開設計上で段階的に追加します。
 
 ## セットアップ
 

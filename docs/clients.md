@@ -131,6 +131,19 @@ frequencyの応答には`frequency_hz`、bucklingの応答には`buckling_factor
 FreeCAD 1.1.3のnative importerでは、frequencyはmode NがFrame/Data block N−1、bucklingは
 先頭にpreload結果があるためmode NがFrame/Data block Nに対応します。この差はMCP側で吸収します。
 
+static解析で幾何学的非線形を使う場合は`create_analysis`へ
+`geometrical_nonlinearity=nonlinear`を指定します。材料非線形は`material_nonlinearity=nonlinear`
+を指定し、`assign_material`へ`hardening_model`（`isotropic`または`kinematic`）と1〜64点の
+`yield_points`を渡します。各点はSI単位の`stress_pa`と無次元の`plastic_strain`で、先頭ひずみは
+0、応力は厳密増加、塑性ひずみは非減少でなければなりません。MCPはnative
+`MaterialMechanicalNonlinear`を同時に作る線形母材へリンクし、Paをwriter用MPaへ変換します。
+
+single-step増分を明示する場合は`time_initial_increment_s`、`time_minimum_increment_s`、
+`time_maximum_increment_s`、`time_period_s`の4値をすべて指定し、minimum ≤ initial ≤ maximum ≤
+periodを満たします。`automatic_incrementation`と`increments_maximum`もboundedです。任意のCalculiX
+iteration文字列、独立LoadCase、複数解析Stepは受け付けません。native出力に明示的な収束句が
+ある場合だけ、job/result応答にboundedな`convergence`要約を含めます。
+
 TieとContactは`add_connection`を使い、`slave`と`master`へ実在するFaceを各1面指定します。
 Tieは`tolerance_m`と`adjust`が必須です。初期Contactは`surface_behavior=hard`だけを許可し、
 frictionless・non-thermal・static解析に限定します。同一面、stale参照、Edge/Vertexは拒否します。

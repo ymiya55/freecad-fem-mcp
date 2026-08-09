@@ -167,6 +167,17 @@ iteration control文字列は初期段階では公開しません。
 - 独立した荷重caseと解析stepを導入し、非線形結果を線形重ね合わせしない
 - job結果に収束/未収束、最終増分、CalculiXの安全に要約した診断を含める
 
+**R3 native範囲完了:** static解析に限定し、`create_analysis`からnative
+`GeometricalNonlinearity` / `MaterialNonlinearity`、自動増分、初期・最小・最大increment、期間、
+最大increment数を設定できます。4つの時間値はすべて指定またはすべて省略とし、有限値・上限と
+minimum ≤ initial ≤ maximum ≤ periodを三層で検証します。`assign_material`は1〜64点の
+応力・塑性ひずみ列からnative `MaterialMechanicalNonlinear`を作り、等方／移動硬化writerへ
+写像します。明示的なnative収束句だけをboundedなjob/result要約へ変換します。
+
+**R3将来計画:** FreeCAD 1.1.3に独立LoadCase・複数解析Stepのnative object/writerがないため、
+これらとstep間荷重履歴は実装しません。既存のbounded amplitudeは単一native step内だけで使い、
+任意iteration control文字列や線形重ね合わせで補完しません。
+
 ### R4: 拘束方程式、remote coupling、Tie
 
 equal DOF、rigid coupling、周期対称など、式を直接入力しなくて済むpresetから

@@ -123,6 +123,25 @@ ConnectionToleranceM = Annotated[
     StrictFloat, Field(ge=0.0, le=1e6), AfterValidator(_finite)
 ]
 
+# R3 static nonlinear controls.  FreeCAD stores all four time values as
+# ``App::PropertyTime`` quantities.  The MCP contract deliberately carries SI
+# seconds and converts to those native quantities in the Addon; controls stay
+# finite, positive, and bounded before crossing either trust boundary.
+SolverTimeSeconds = Annotated[
+    StrictFloat, Field(gt=0.0, le=1e9), AfterValidator(_finite)
+]
+SolverIncrementsMaximum = Annotated[StrictInt, Field(ge=1, le=1_000_000)]
+
+# CalculiX's nonlinear material object accepts true stress (SI Pa at the MCP
+# boundary) and logarithmic plastic strain.  A modest point cap keeps the
+# native ``YieldPoints`` list and result/job payloads bounded.
+NonlinearStressPa = Annotated[
+    StrictFloat, Field(gt=0.0, le=1e15), AfterValidator(_finite)
+]
+PlasticStrain = Annotated[
+    StrictFloat, Field(ge=0.0, le=1e3), AfterValidator(_finite)
+]
+
 
 class StrictModel(BaseModel):
     """Base class used by every externally supplied request model."""
@@ -134,6 +153,22 @@ class StrictModel(BaseModel):
         str_strip_whitespace=True,
         validate_default=True,
     )
+
+
+class YieldPoint(StrictModel):
+    """One bounded true-stress/logarithmic-plastic-strain point.
+
+    Stress is supplied in pascals and converted to FreeCAD's native MPa text
+    representation at the Addon boundary.  The first point must have zero
+    plastic strain; sequence monotonicity is checked by the containing
+    material request.
+    """
+
+    stress_pa: NonlinearStressPa
+    plastic_strain: PlasticStrain
+
+
+NonlinearYieldPoints = Annotated[list[YieldPoint], Field(min_length=1, max_length=64)]
 
 
 class EmptyRequest(StrictModel):
@@ -219,6 +254,18 @@ class _AnalysisOptions(StrictModel):
     buckling_factors: BucklingFactors | None = None
     buckling_accuracy: BucklingAccuracy | None = None
 
+    # R3 controls are intentionally part of the static create-analysis
+    # request rather than a generic native-property escape hatch.  They remain
+    # optional so existing linear callers serialize exactly as before.
+    geometrical_nonlinearity: Literal["linear", "nonlinear"] | None = None
+    material_nonlinearity: Literal["linear", "nonlinear"] | None = None
+    automatic_incrementation: StrictBool | None = None
+    time_initial_increment_s: SolverTimeSeconds | None = None
+    time_minimum_increment_s: SolverTimeSeconds | None = None
+    time_maximum_increment_s: SolverTimeSeconds | None = None
+    time_period_s: SolverTimeSeconds | None = None
+    increments_maximum: SolverIncrementsMaximum | None = None
+
     @model_validator(mode="after")
     def validate_analysis_variant(self) -> "_AnalysisOptions":
         frequency_fields = (
@@ -228,9 +275,38 @@ class _AnalysisOptions(StrictModel):
         )
         buckling_fields = (self.buckling_factors, self.buckling_accuracy)
 
+        geometrical_nonlinearity = self.geometrical_nonlinearity or "linear"
+        material_nonlinearity = self.material_nonlinearity or "linear"
+        automatic_incrementation = (
+            True if self.automatic_incrementation is None else self.automatic_incrementation
+        )
+        nonlinear_fields = (
+            geometrical_nonlinearity,
+            material_nonlinearity,
+            automatic_incrementation,
+            self.time_initial_increment_s,
+            self.time_minimum_increment_s,
+            self.time_maximum_increment_s,
+            self.time_period_s,
+            self.increments_maximum,
+        )
+
+        if self.analysis_type != "static":
+            # Keep the mode API closed: nonlinear controls and single-step
+            # time settings have no native writer representation for modal or
+            # buckling jobs.
+            if (
+                geometrical_nonlinearity != "linear"
+                or material_nonlinearity != "linear"
+                or automatic_incrementation is not True
+                or any(value is not None for value in nonlinear_fields[3:])
+            ):
+                raise ValueError("nonlinear/time controls are supported only for static analysis")
+
         if self.analysis_type == "static":
             if any(value is not None for value in (*frequency_fields, *buckling_fields)):
                 raise ValueError("static analysis does not accept analysis-specific fields")
+            self._validate_time_increments()
             return self
 
         if self.analysis_type == "frequency":
@@ -260,12 +336,57 @@ class _AnalysisOptions(StrictModel):
             raise ValueError("buckling analysis does not accept frequency fields")
         return self
 
+    def _validate_time_increments(self) -> None:
+        values = {
+            "time_initial_increment_s": self.time_initial_increment_s,
+            "time_minimum_increment_s": self.time_minimum_increment_s,
+            "time_maximum_increment_s": self.time_maximum_increment_s,
+            "time_period_s": self.time_period_s,
+        }
+        # Omitted values deliberately preserve FreeCAD's native defaults.  If
+        # one control is supplied, require the complete tuple so both bridge
+        # layers map a deterministic single-step writer payload.
+        supplied = [name for name, value in values.items() if value is not None]
+        if supplied and len(supplied) != len(values):
+            raise ValueError("all time increment controls are required together")
+        if not supplied:
+            return
+        initial = self.time_initial_increment_s
+        minimum = self.time_minimum_increment_s
+        maximum = self.time_maximum_increment_s
+        period = self.time_period_s
+        assert initial is not None and minimum is not None and maximum is not None and period is not None
+        if minimum > initial or initial > maximum or maximum > period:
+            raise ValueError(
+                "time controls must satisfy minimum <= initial <= maximum <= period"
+            )
+
 
 class AnalysisRequest(_AnalysisOptions):
     document_id: BoundedText | None = None
     analysis_id: BoundedText | None = None
     name: OptionalText | None = None
     solver: Literal["SolverCalculiX"] = "SolverCalculiX"
+
+
+def _validate_nonlinear_material_fields(
+    hardening_model: str | None, yield_points: list[YieldPoint] | None
+) -> None:
+    if (hardening_model is None) != (yield_points is None):
+        raise ValueError("hardening_model and yield_points must be provided together")
+    if yield_points is None:
+        return
+    if yield_points[0].plastic_strain != 0.0:
+        raise ValueError("yield_points first plastic_strain must be exactly 0.0")
+    previous_stress = 0.0
+    previous_strain = 0.0
+    for point in yield_points:
+        if point.stress_pa <= previous_stress:
+            raise ValueError("yield_points stress_pa values must be strictly increasing")
+        if point.plastic_strain < previous_strain:
+            raise ValueError("yield_points plastic_strain values must be nondecreasing")
+        previous_stress = point.stress_pa
+        previous_strain = point.plastic_strain
 
 
 class MaterialRequest(StrictModel):
@@ -279,6 +400,13 @@ class MaterialRequest(StrictModel):
     )
     density_kg_m3: PositiveFiniteFloat | None = None
     yield_strength_pa: PositiveFiniteFloat | None = None
+    hardening_model: Literal["isotropic", "kinematic"] | None = None
+    yield_points: NonlinearYieldPoints | None = None
+
+    @model_validator(mode="after")
+    def validate_nonlinear_material(self) -> "MaterialRequest":
+        _validate_nonlinear_material_fields(self.hardening_model, self.yield_points)
+        return self
 
 
 class EntityRef(StrictModel):
@@ -451,6 +579,13 @@ class AssignMaterialRequest(StrictModel):
     )
     density_kg_m3: PositiveFiniteFloat | None = None
     yield_strength_pa: PositiveFiniteFloat | None = None
+    hardening_model: Literal["isotropic", "kinematic"] | None = None
+    yield_points: NonlinearYieldPoints | None = None
+
+    @model_validator(mode="after")
+    def validate_nonlinear_material(self) -> "AssignMaterialRequest":
+        _validate_nonlinear_material_fields(self.hardening_model, self.yield_points)
+        return self
 
 
 class AddConstraintRequest(StrictModel):
@@ -1121,6 +1256,7 @@ __all__ = [
     "ValidateParams",
     "ValueList",
     "Vector3",
+    "YieldPoint",
     "ViewRequest",
     "ViewInput",
     "ViewParams",

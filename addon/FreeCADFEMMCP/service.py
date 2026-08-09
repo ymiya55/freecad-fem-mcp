@@ -38,7 +38,10 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
         {
             "action", "document_id", "name", "solver", "analysis_type",
             "eigenmodes_count", "frequency_low_hz", "frequency_high_hz",
-            "buckling_factors", "buckling_accuracy",
+            "buckling_factors", "buckling_accuracy", "geometrical_nonlinearity",
+            "material_nonlinearity", "automatic_incrementation",
+            "time_initial_increment_s", "time_minimum_increment_s",
+            "time_maximum_increment_s", "time_period_s", "increments_maximum",
         },
         {"action"},
     ),
@@ -53,6 +56,7 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
         {
             "action", "document_id", "analysis_id", "material_id", "name",
             "youngs_modulus_pa", "poisson_ratio", "density_kg_m3", "yield_strength_pa",
+            "hardening_model", "yield_points",
         },
         {"action", "analysis_id"},
     ),
@@ -260,6 +264,7 @@ class FEMService:
                 raise ServiceError("poisson_ratio is outside the allowed range")
             cls._optional_finite(params, "density_kg_m3", positive=True)
             cls._optional_finite(params, "yield_strength_pa", positive=True)
+            cls._validate_nonlinear_material(params)
             return
         if method == "mesh":
             cls._require_identifier(params, "analysis_id")
@@ -309,6 +314,44 @@ class FEMService:
         frequency_high_hz = params.get("frequency_high_hz")
         buckling_factors = params.get("buckling_factors")
         buckling_accuracy = params.get("buckling_accuracy")
+        geometrical_nonlinearity = params.get("geometrical_nonlinearity", "linear")
+        material_nonlinearity = params.get("material_nonlinearity", "linear")
+        automatic_incrementation = params.get("automatic_incrementation", True)
+        time_names = (
+            "time_initial_increment_s",
+            "time_minimum_increment_s",
+            "time_maximum_increment_s",
+            "time_period_s",
+        )
+        time_values = {name: params.get(name) for name in time_names}
+        increments_maximum = params.get("increments_maximum")
+        if geometrical_nonlinearity not in {"linear", "nonlinear"}:
+            raise ServiceError("geometrical_nonlinearity is unsupported")
+        if material_nonlinearity not in {"linear", "nonlinear"}:
+            raise ServiceError("material_nonlinearity is unsupported")
+        cls._strict_bool(automatic_incrementation, "automatic_incrementation")
+        if increments_maximum is not None:
+            cls._strict_int(increments_maximum, "increments_maximum", 1, 1_000_000)
+        supplied_time_values = [value for value in time_values.values() if value is not None]
+        if supplied_time_values and len(supplied_time_values) != len(time_values):
+            raise ServiceError("all time increment controls are required together")
+        normalized_times: dict[str, float] = {}
+        for name, value in time_values.items():
+            if value is None:
+                continue
+            normalized_times[name] = cls._finite_value(value, name, strict_numeric=True)
+            if not 1e-12 <= normalized_times[name] <= 1e9:
+                raise ServiceError("{} is outside the allowed range".format(name))
+        initial = normalized_times.get("time_initial_increment_s")
+        minimum = normalized_times.get("time_minimum_increment_s")
+        maximum = normalized_times.get("time_maximum_increment_s")
+        period = normalized_times.get("time_period_s")
+        if normalized_times:
+            assert initial is not None and minimum is not None and maximum is not None and period is not None
+            if minimum > initial or initial > maximum or maximum > period:
+                raise ServiceError(
+                    "time controls must satisfy minimum <= initial <= maximum <= period"
+                )
         frequency_fields = (eigenmodes_count, frequency_low_hz, frequency_high_hz)
         buckling_fields = (buckling_factors, buckling_accuracy)
 
@@ -316,6 +359,15 @@ class FEMService:
             if any(value is not None for value in (*frequency_fields, *buckling_fields)):
                 raise ServiceError("static analysis does not accept analysis-specific fields")
             return
+
+        if (
+            geometrical_nonlinearity != "linear"
+            or material_nonlinearity != "linear"
+            or automatic_incrementation is not True
+            or supplied_time_values
+            or increments_maximum is not None
+        ):
+            raise ServiceError("nonlinear/time controls are supported only for static analysis")
 
         if analysis_type == "frequency":
             if eigenmodes_count is None:
@@ -358,6 +410,40 @@ class FEMService:
             raise ServiceError("buckling_accuracy is outside the allowed range")
         if any(value is not None for value in frequency_fields):
             raise ServiceError("buckling analysis does not accept frequency fields")
+
+    @classmethod
+    def _validate_nonlinear_material(cls, params: Mapping[str, Any]) -> None:
+        """Validate the closed material hardening/point contract twice."""
+
+        hardening = params.get("hardening_model")
+        points = params.get("yield_points")
+        if (hardening is None) != (points is None):
+            raise ServiceError("hardening_model and yield_points must be provided together")
+        if hardening is None:
+            return
+        if hardening not in {
+            "isotropic", "kinematic"
+        }:
+            raise ServiceError("hardening_model is unsupported")
+        if not isinstance(points, list) or not 1 <= len(points) <= 64:
+            raise ServiceError("yield_points must contain between 1 and 64 points")
+        previous_stress = 0.0
+        previous_strain = 0.0
+        for index, point in enumerate(points):
+            if not isinstance(point, Mapping) or set(point) != {"stress_pa", "plastic_strain"}:
+                raise ServiceError("yield point must contain exactly stress_pa and plastic_strain")
+            stress = cls._finite_value(point["stress_pa"], "yield point stress_pa", strict_numeric=True)
+            strain = cls._finite_value(point["plastic_strain"], "yield point plastic_strain", strict_numeric=True)
+            if not 0.0 < stress <= 1e15 or not 0.0 <= strain <= 1e3:
+                raise ServiceError("yield point is outside the allowed range")
+            if index == 0 and strain != 0.0:
+                raise ServiceError("yield_points first plastic_strain must be exactly 0.0")
+            if stress <= previous_stress:
+                raise ServiceError("yield_points stress_pa values must be strictly increasing")
+            if strain < previous_strain:
+                raise ServiceError("yield_points plastic_strain values must be nondecreasing")
+            previous_stress = stress
+            previous_strain = strain
 
     @classmethod
     def _validate_connection_target(cls, value: Any, name: str) -> tuple[str, str]:
@@ -565,14 +651,36 @@ class FEMService:
 
         if method == "analysis":
             self._action(params, "create")
+            analysis_type = params.get("analysis_type", "static")
+            # Preserve the established frequency/buckling wire contract: R3
+            # controls are forwarded only for static analyses and only when a
+            # caller explicitly supplied the field.  The operation layer owns
+            # its native linear/time defaults when these kwargs are absent.
+            analysis_kwargs: dict[str, Any] = {
+                "analysis_type": analysis_type,
+                "eigenmodes_count": params.get("eigenmodes_count"),
+                "frequency_low_hz": params.get("frequency_low_hz"),
+                "frequency_high_hz": params.get("frequency_high_hz"),
+                "buckling_factors": params.get("buckling_factors"),
+                "buckling_accuracy": params.get("buckling_accuracy"),
+            }
+            if analysis_type == "static":
+                r3_defaults: dict[str, Any] = {
+                    "geometrical_nonlinearity": params.get("geometrical_nonlinearity"),
+                    "material_nonlinearity": params.get("material_nonlinearity"),
+                    "automatic_incrementation": params.get("automatic_incrementation"),
+                    "time_initial_increment_s": params.get("time_initial_increment_s"),
+                    "time_minimum_increment_s": params.get("time_minimum_increment_s"),
+                    "time_maximum_increment_s": params.get("time_maximum_increment_s"),
+                    "time_period_s": params.get("time_period_s"),
+                    "increments_maximum": params.get("increments_maximum"),
+                }
+                analysis_kwargs.update(
+                    {key: value for key, value in r3_defaults.items() if key in params}
+                )
             result = self.operations.create_analysis(
                 params.get("name", "Analysis"),
-                analysis_type=params.get("analysis_type", "static"),
-                eigenmodes_count=params.get("eigenmodes_count"),
-                frequency_low_hz=params.get("frequency_low_hz"),
-                frequency_high_hz=params.get("frequency_high_hz"),
-                buckling_factors=params.get("buckling_factors"),
-                buckling_accuracy=params.get("buckling_accuracy"),
+                **analysis_kwargs,
             )
             return {"analysis_id": result["name"], **result}
 
@@ -718,7 +826,7 @@ class FEMService:
             raw_frame = params.get("frame", 0)
             frame = 0 if raw_frame is None else int(raw_frame)
             if action == "get":
-                return self.pipeline.query_native(
+                summary = self.pipeline.query_native(
                     results,
                     params.get("field"),
                     frame,
@@ -726,10 +834,18 @@ class FEMService:
                     mode=mode,
                     analysis_type=analysis_type,
                 )
-            return self.pipeline.show_native(
+                related = self.jobs.find_for_object(solver, "calculix")
+                if isinstance(related, Mapping) and related.get("convergence") is not None:
+                    summary["convergence"] = related["convergence"]
+                return summary
+            summary = self.pipeline.show_native(
                 results, params.get("field"), frame, limit, mode=mode,
                 analysis_type=analysis_type,
             )
+            related = self.jobs.find_for_object(solver, "calculix")
+            if isinstance(related, Mapping) and related.get("convergence") is not None:
+                summary["convergence"] = related["convergence"]
+            return summary
 
         raise ServiceError("method is not implemented")
 
