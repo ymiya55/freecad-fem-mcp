@@ -1342,6 +1342,53 @@ class FreeCADOperations:
             and hasattr(item, "RotationFrequency")
         )
 
+    @staticmethod
+    def _normalize_native_references(raw: Any) -> list[Any]:
+        """Normalize FreeCAD ``PropertyLinkSubList`` values for diagnostics.
+
+        FreeCAD 1.1 returns one entry as ``(obj, ("Face1",))`` (and groups
+        multiple sub-elements for the same object in that inner tuple), while
+        older/native test objects return ``(obj, "Face1")``.  Validation works
+        with one ``(obj, subelement)`` pair at a time, but must not coerce
+        malformed values into valid references.  Empty native sub-element
+        tuples represent an object-level reference and map to the existing
+        empty-string whole-shape sentinel.  A single pair may be supplied
+        directly as ``(obj, ("Face1",))``; a list/tuple whose first item is
+        itself a pair remains a list of pairs.
+        """
+
+        if isinstance(raw, (list, tuple)):
+            is_pair = len(raw) == 2 and not (
+                isinstance(raw[0], (list, tuple)) and len(raw[0]) == 2
+            )
+            entries = (raw,) if is_pair else raw
+        else:
+            # Keep malformed values visible to callers instead of raising from
+            # validation while iterating an unexpected native property type.
+            try:
+                entries = list(raw)
+            except (TypeError, ValueError):
+                entries = [raw]
+
+        normalized: list[Any] = []
+        for entry in entries:
+            if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+                normalized.append(entry)
+                continue
+            obj, subelements = entry
+            if isinstance(subelements, str):
+                normalized.append((obj, subelements))
+            elif isinstance(subelements, (tuple, list)):
+                if not subelements:
+                    normalized.append((obj, ""))
+                else:
+                    normalized.extend((obj, subelement) for subelement in subelements)
+            else:
+                # Preserve non-string/non-sequence sub-elements so the
+                # existing empty/malformed diagnostics still fire.
+                normalized.append((obj, subelements))
+        return normalized
+
     @classmethod
     def _reference_diagnostics(cls, item: Any) -> list[str]:
         """Check native references without mutating or raising from validation."""
@@ -1356,12 +1403,13 @@ class FreeCADOperations:
         if "constraint" not in token and "remoteload" not in token and not is_centrifugal:
             return []
         name = cls._object_id(item) or "constraint"
-        references = getattr(item, "References", None)
-        if references is None:
+        raw_references = getattr(item, "References", None)
+        if raw_references is None:
             # Native global loads such as ConstraintCentrif can expose a
             # different axis property instead of References; only report a
             # missing reference when a reference-bearing object advertises it.
             return []
+        references = cls._normalize_native_references(raw_references)
         # An empty native ``ConstraintCentrif.References`` means all solids;
         # it is a documented global-load sentinel, not a missing target.
         if is_centrifugal and not references:
@@ -1493,8 +1541,8 @@ class FreeCADOperations:
         """Validate a native ``ConstraintCentrif.RotationAxis`` reference."""
 
         name = cls._object_id(item) or "load"
-        references = getattr(item, "RotationAxis", None)
-        if not isinstance(references, (list, tuple)) or len(references) != 1:
+        references = cls._normalize_native_references(getattr(item, "RotationAxis", None))
+        if len(references) != 1:
             return ["load {} rotation axis must contain exactly one Edge reference".format(name)]
         reference = references[0]
         if not isinstance(reference, (tuple, list)) or len(reference) != 2:
@@ -1630,7 +1678,7 @@ class FreeCADOperations:
             token = cls._constraint_token(item)
             if not any(marker in token for marker in ("constraintfixed", "constraintdisplacement")):
                 continue
-            refs = getattr(item, "References", None) or []
+            refs = cls._normalize_native_references(getattr(item, "References", None) or [])
             dofs = {axis for axis in "xyz" if "constraintfixed" in token or not bool(getattr(item, axis + "Free", True))}
             for reference in refs:
                 if not isinstance(reference, (tuple, list)) or len(reference) != 2:

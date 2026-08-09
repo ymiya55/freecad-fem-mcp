@@ -72,11 +72,11 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
     ("jobs", "list"): ({"action", "analysis_id"}, {"action"}),
     ("jobs", "cancel"): ({"action", "job_id"}, {"action", "job_id"}),
     ("results", "get"): (
-        {"action", "analysis_id", "field", "max_items"},
+        {"action", "analysis_id", "field", "max_items", "mode", "frame"},
         {"action", "analysis_id"},
     ),
     ("results", "show"): (
-        {"action", "analysis_id", "field", "max_items", "frame"},
+        {"action", "analysis_id", "field", "max_items", "mode", "frame"},
         {"action", "analysis_id"},
     ),
 }
@@ -289,8 +289,12 @@ class FEMService:
                 raise ServiceError("result field is unsupported")
             if "max_items" in params:
                 cls._strict_int(params["max_items"], "max_items", 1, 10000)
-            if action == "show" and "frame" in params:
+            if "mode" in params and params["mode"] is not None:
+                cls._strict_int(params["mode"], "mode", 1, 100)
+            if "frame" in params and params["frame"] is not None:
                 cls._strict_int(params["frame"], "frame", 0, 100000)
+            if params.get("mode") is not None and params.get("frame", 0) not in (None, 0):
+                raise ServiceError("mode and nonzero frame cannot be combined")
 
     @classmethod
     def _validate_analysis_options(cls, params: Mapping[str, Any]) -> None:
@@ -697,19 +701,35 @@ class FEMService:
 
         if method == "results":
             action = self._action(params, {"get", "show"})
+            analysis_type = None
             if params.get("analysis_id"):
                 solver = self._solver(self._analysis(params.get("analysis_id")))
+                analysis_type = getattr(solver, "AnalysisType", None)
             elif params.get("job_id"):
                 solver = self.jobs.native_object(params.get("job_id"))
+                analysis_type = getattr(solver, "AnalysisType", None)
             else:
                 raise ServiceError("analysis_id or job_id is required")
             results = getattr(solver, "Results", None)
             if results is None:
                 raise ServiceError("solver has no imported results")
             limit = int(params.get("max_items", 8192))
+            mode = params.get("mode")
+            raw_frame = params.get("frame", 0)
+            frame = 0 if raw_frame is None else int(raw_frame)
             if action == "get":
-                return self.pipeline.query_native(results, params.get("field"), int(params.get("frame", 0)), limit)
-            return self.pipeline.show_native(results, params.get("field"), int(params.get("frame", 0)), limit)
+                return self.pipeline.query_native(
+                    results,
+                    params.get("field"),
+                    frame,
+                    limit,
+                    mode=mode,
+                    analysis_type=analysis_type,
+                )
+            return self.pipeline.show_native(
+                results, params.get("field"), frame, limit, mode=mode,
+                analysis_type=analysis_type,
+            )
 
         raise ServiceError("method is not implemented")
 

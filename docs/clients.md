@@ -124,6 +124,13 @@ force、pressure、displacement、remote load / displacementには`amplitude`を
 `analysis_type=buckling`、`buckling_factors`（1〜100）、`buckling_accuracy`（0より大きく
 1以下）を指定します。frequencyには密度、bucklingには支持と荷重が必要です。
 
+解析完了後は`get_results`または`show_result`の`mode`へ1始まりのモード番号を指定します。
+frequencyの応答には`frequency_hz`、bucklingの応答には`buckling_factor`が含まれます。
+`mode`は1〜100に制限され、存在しないモードは拒否されます。静解析との互換用`frame`は
+0始まりですが、意味の混同を防ぐため`mode`と非ゼロ`frame`は同時指定できません。
+FreeCAD 1.1.3のnative importerでは、frequencyはmode NがFrame/Data block N−1、bucklingは
+先頭にpreload結果があるためmode NがFrame/Data block Nに対応します。この差はMCP側で吸収します。
+
 TieとContactは`add_connection`を使い、`slave`と`master`へ実在するFaceを各1面指定します。
 Tieは`tolerance_m`と`adjust`が必須です。初期Contactは`surface_behavior=hard`だけを許可し、
 frictionless・non-thermal・static解析に限定します。同一面、stale参照、Edge/Vertexは拒否します。

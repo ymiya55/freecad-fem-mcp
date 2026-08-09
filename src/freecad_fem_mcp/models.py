@@ -102,6 +102,11 @@ RemoteDisplacementVector3 = Annotated[
 RemoteRotationVector3 = Annotated[list[RemoteRotationComponent], Field(min_length=3, max_length=3)]
 CentrifugalFrequencyHz = Annotated[StrictFloat, Field(gt=0, le=1e9), AfterValidator(_finite)]
 BoundedInt = Annotated[StrictInt, Field(ge=0, le=2_147_483_647)]
+# Modal result selection is deliberately narrower than the solver's mode count
+# controls.  A result query must never permit an unbounded index from an
+# untrusted client, while still covering the maximum public eigenmode count.
+ModeNumber = Annotated[StrictInt, Field(ge=1, le=100)]
+ResultFrame = Annotated[StrictInt, Field(ge=0, le=100000)]
 
 # SolverCalculiX analysis controls.  These aliases stay strict at the MCP
 # boundary so JSON booleans/strings cannot silently become numeric solver
@@ -390,6 +395,8 @@ class ResultsRequest(StrictModel):
     job_id: BoundedText | None = None
     field: Literal["displacement", "stress", "strain", "von_mises", "reaction"] | None = None
     max_items: Annotated[StrictInt, Field(ge=1, le=10000)] = 1000
+    mode: ModeNumber | None = None
+    frame: ResultFrame = 0
 
 
 # Dedicated public-tool inputs.  Unlike the compatibility request models above,
@@ -866,10 +873,21 @@ class GetResultsRequest(StrictModel):
     analysis_id: BoundedText
     field: Literal["displacement", "stress", "strain", "von_mises", "reaction"] | None = None
     max_items: Annotated[StrictInt, Field(ge=1, le=10000)] = 1000
+    # ``frame`` remains available for the existing static FemPostPipeline API.
+    # ``mode`` selects one native modal frame.  They are mutually exclusive
+    # except for the default frame=0, which keeps old callers source-compatible.
+    mode: ModeNumber | None = None
+    frame: ResultFrame | None = None
+
+    @model_validator(mode="after")
+    def validate_result_selector(self) -> "GetResultsRequest":
+        if self.mode is not None and self.frame not in (None, 0):
+            raise ValueError("mode and nonzero frame cannot be combined")
+        return self
 
 
 class ShowResultRequest(GetResultsRequest):
-    frame: Annotated[StrictInt, Field(ge=0, le=100000)] = 0
+    frame: ResultFrame = 0
 
 
 # Response models are intentionally modest.  Payloads from FreeCAD vary by
@@ -1052,6 +1070,8 @@ __all__ = [
     "PUBLIC_REQUEST_MODELS",
     "BoundedPath",
     "BoundedText",
+    "ModeNumber",
+    "ResultFrame",
     "AnalysisFrequencyHz",
     "BucklingAccuracy",
     "BucklingFactors",

@@ -33,10 +33,10 @@ FreeCAD 1.1.x の新しい `SolverCalculiX` フレームワークを、MCPクラ
 - static解析のFace-to-Face TieとHard frictionless Contact
 - FreeCAD 1.1のネイティブGmshメッシャー
 - FreeCAD 1.1のネイティブ`CalculiXTools`
-- `Fem::FemPostPipeline`による結果照会とGUI表示
+- `Fem::FemPostPipeline`による静解析frame、固有振動mode、座屈modeの結果照会とGUI表示
 - GUIビューポートまたはウィンドウのキャプチャ
 
-非線形・接触、熱連成、電磁解析は同じ公開設計上で段階的に追加します。
+非線形・高度な接触、熱連成、電磁解析は同じ公開設計上で段階的に追加します。
 
 ## セットアップ
 
@@ -108,7 +108,7 @@ FreeCAD 1.1.xではAddonは`%APPDATA%\FreeCAD\v1-1\Mod\FreeCADFEMMCP`へ導入�
 6. `create_mesh`でGmshジョブを開始し、`get_job`で完了を待ちます。
 7. `validate_analysis`でFreeCAD公式のCalculiX事前検証を通します。
 8. `start_analysis`でCalculiXジョブを開始します。
-9. `get_results` / `show_result` / `capture_gui`で数値とGUIを検証します。
+9. `get_results` / `show_result` / `capture_gui`で数値とGUIを検証します。frequency / bucklingでは`mode`を1〜100で指定し、静解析用の非ゼロ`frame`とは同時指定しません。
 10. 保存が必要な場合だけ`save_document`を明示的に呼びます。
 
 解析オブジェクトの変更はFreeCADのUndoトランザクションに入ります。自動保存は行いません。既存ファイルを上書きする場合は`overwrite=true`と一致する`expected_revision`が必要です。

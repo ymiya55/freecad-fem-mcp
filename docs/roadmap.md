@@ -143,11 +143,16 @@ rigid body/remote条件を追加します。荷重振幅とcase識別子もこ�
 - 線形座屈: 座屈係数1〜100、正の精度、モード別形状表示
 - 不正なモード番号、剛体モードだけのモデル、質量密度不足を明示的に診断
 
-**R2 API・GUI実装完了:** `create_analysis`で`frequency`と`buckling`を選択でき、
+**R2完了:** `create_analysis`で`frequency`と`buckling`を選択でき、
 モード数1〜100、対で指定する周波数上下限、座屈係数数1〜100、正の精度を
 `SolverCalculiX`のnative propertyへ写像します。FreeCAD 1.1.3 GUIで両解析objectを確認し、
 strict validationへfrequencyの密度不足、bucklingの支持・荷重不足診断を追加しました。
-実解析の数値ベンチマークとmode frame結果の受け入れは、R2の次のリリースゲートです。
+`get_results` / `show_result`へ1始まりのboundedな`mode`選択を追加し、frequencyでは
+`frequency_hz`、bucklingでは`buckling_factor`を返します。FreeCAD 1.1.3 native importerの
+frequency mode N = Frame/Data block N−1、buckling mode N = Frame/Data block N（block 0は
+preload）という差を吸収し、modeと非ゼロframeの曖昧な同時指定を拒否します。実CalculiX
+ベンチマークでは一次固有振動数のEuler理論差0.146%、一次座屈係数差0.175%で、各5%以内の
+受け入れ基準を満たしました。
 
 ### R3: 幾何学的非線形、材料非線形、荷重履歴
 

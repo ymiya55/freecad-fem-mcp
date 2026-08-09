@@ -61,6 +61,7 @@ from .models import (
     GetStatusRequest,
     InspectDocumentRequest,
     ListJobsRequest,
+    ModeNumber,
     OptionalText,
     OpenModelRequest,
     PositiveFiniteFloat,
@@ -741,24 +742,35 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
 
     @app.tool(
         name="get_results",
-        description="Read bounded solver results.",
+        description=(
+            "Read bounded SolverCalculiX results. Static analyses use the "
+            "FemPostPipeline frame; frequency/buckling analyses may select a "
+            "native ResultMechanical mode number."
+        ),
         annotations=ann(readonly=True, destructive=False, idempotent=True),
     )
     async def get_results(
         analysis_id: BoundedText,
         field: Literal["displacement", "stress", "strain", "von_mises", "reaction"] | None = None,
         max_items: Annotated[StrictInt, Field(ge=1, le=10000)] = 1000,
+        mode: ModeNumber | None = None,
+        frame: Annotated[StrictInt, Field(ge=0, le=100000)] | None = None,
     ) -> Any:
         request = GetResultsRequest(
             analysis_id=analysis_id,
             field=field,
             max_items=max_items,
+            mode=mode,
+            frame=frame,
         )
         return await invoke("results", "get", request)
 
     @app.tool(
         name="show_result",
-        description="Show one bounded result field in FreeCAD.",
+        description=(
+            "Show one bounded result field in FreeCAD. Use mode for a native "
+            "frequency/buckling Eigenmode and frame for a pipeline frame."
+        ),
         annotations=ann(readonly=False, destructive=False, idempotent=True),
     )
     async def show_result(
@@ -766,12 +778,14 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         field: Literal["displacement", "stress", "strain", "von_mises", "reaction"] | None = None,
         max_items: Annotated[StrictInt, Field(ge=1, le=10000)] = 1000,
         frame: Annotated[StrictInt, Field(ge=0, le=100000)] = 0,
+        mode: ModeNumber | None = None,
     ) -> Any:
         request = ShowResultRequest(
             analysis_id=analysis_id,
             field=field,
             max_items=max_items,
             frame=frame,
+            mode=mode,
         )
         return await invoke("results", "show", request)
 

@@ -992,6 +992,49 @@ def test_validate_tie_and_centrifugal_references_enforce_native_shape_kinds() ->
     assert "constraint Centrifugal requires Solid references" in diagnostics
 
 
+def test_validate_normalizes_native_property_link_sublist_references() -> None:
+    app = _ConnectionApp()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithConnections)
+    geometry = app.ActiveDocument.geometry
+    single_pair = (geometry, ("Face1",))
+
+    # FreeCAD 1.1 returns a list of pairs, but accepting one pair directly is
+    # useful for native properties that expose a single link/sub-list value.
+    assert FreeCADOperations._normalize_native_references(single_pair) == [
+        (geometry, "Face1")
+    ]
+    assert FreeCADOperations._normalize_native_references([single_pair]) == [
+        (geometry, "Face1")
+    ]
+    assert FreeCADOperations._normalize_native_references(
+        [single_pair, (geometry, ("Face2",))]
+    ) == [(geometry, "Face1"), (geometry, "Face2")]
+
+    tie = _NativeTie("NativeLinkSubListTie")
+    tie.References = [single_pair]
+    assert operations._reference_diagnostics(tie) == []
+
+
+@pytest.mark.parametrize(
+    "subelements, expected",
+    [
+        (("Face999",), "constraint NativeLinkSubListTie reference 1 is stale"),
+        (("Edge1",), "constraint NativeLinkSubListTie requires Face references"),
+        (("Face1", None), "constraint NativeLinkSubListTie reference 2 is empty"),
+    ],
+)
+def test_validate_native_property_link_sublist_preserves_reference_diagnostics(
+    subelements: tuple[object, ...], expected: str
+) -> None:
+    app = _ConnectionApp()
+    operations = FreeCADOperations(app=app, objects_fem=_ObjectsFemWithConnections)
+    tie = _NativeTie("NativeLinkSubListTie")
+    tie.References = [(app.ActiveDocument.geometry, subelements)]
+
+    diagnostics = operations._reference_diagnostics(tie)
+    assert expected in diagnostics
+
+
 def test_validate_buckling_with_centrifugal_load_still_requires_density() -> None:
     app = _ConnectionApp()
     app.ActiveDocument.analysis.Group[0].AnalysisType = "buckling"

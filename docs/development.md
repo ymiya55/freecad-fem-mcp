@@ -53,6 +53,12 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 & (Join-Path $freecadRoot "FreeCADCmd.exe") ".\tests\freecad_accuracy_benchmark.py"
 ```
 
+固有振動・線形座屈の定量精度ベンチマーク:
+
+```powershell
+& (Join-Path $freecadRoot "FreeCADCmd.exe") ".\tests\freecad_modal_buckling_benchmark.py"
+```
+
 ## FreeCAD統合試験
 
 検証対象:
@@ -72,8 +78,9 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 6. 公式CalculiX事前検証を成功させる。
 7. CalculiXジョブを完了させる。
 8. `solver.Results`に`Fem::FemPostPipeline`とテキスト出力があることを確認する。
-9. 数値結果、GUI表示、スクリーンショットを確認する。
-10. 無認証・不正入力・キャンセル・再接続時にドキュメント整合性が維持されることを確認する。
+9. frequency / bucklingでは要求modeとnative Frame/Data blockの対応を確認する。bucklingのblock 0はpreloadである。
+10. 数値結果、GUI表示、スクリーンショットを確認する。
+11. 無認証・不正入力・キャンセル・再接続時にドキュメント整合性が維持されることを確認する。
 
 ジョブ試験では、queuedの即時キャンセル、runningのterminateとkillフォールバック、完了済み状態の不変性、未知job拒否、stdout/stderrのUTF-8正規化・上限・資格情報除去を確認します。再接続試験では同じMCP bridge clientを維持したままFreeCADを再起動し、新しいPID・port・トークンへ1回だけ更新されることを確認します。
 
@@ -91,6 +98,9 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 - 任意加速度をselfweight、遠心力を直線Edge軸を持つ`Fem::ConstraintPython`として生成し、FreeCAD 1.1.3 GUIで確認
 - 3点のtabular amplitudeを`Fem::ConstraintForce`の`EnableAmplitude` / `AmplitudeValues`へ生成し、重複時刻を拒否してrevision不変を確認
 - frequency / buckling解析を`Fem::SolverCalculiX`としてGUI生成し、無効な周波数範囲・座屈精度を拒否、密度・支持・荷重不足のstrict診断を確認
+- native `FemPostPipeline`から1始まりのmodeを安全に選択し、frequencyの`frequency_hz`とbucklingの`buckling_factor`を区別して取得・表示
+- 100×10×10 mm鋼製カンチレバーの一次固有振動数834.2982 Hz（Euler理論835.5166 Hz、誤差0.146%）
+- 同じ固定自由柱の1,000 N圧縮時の一次座屈係数43.10404（Euler理論43.17952、誤差0.175%）
 - `add_connection`からnative TieとHard frictionless ContactをGUI生成し、同一面・stale Faceを拒否してrevision不変を確認
 - `add_boundary_condition`からnative pinとglobal Cartesian rollerを`Fem::ConstraintDisplacement`として生成し、回転自由度、参照実在性、ゼロDOF、重複拘束、剛体運動、body-load密度を事前診断
 - Codex CLI 0.146.0から認証付きMCPへ実接続し、status、文書検査、選択、GUI capture、ツール単位承認後のview操作を確認
