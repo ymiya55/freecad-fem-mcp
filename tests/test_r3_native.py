@@ -50,18 +50,19 @@ class _Document:
         self.analysis = _Analysis()
         self.Objects = [self.analysis]
         self._objects = {"Analysis": self.analysis}
+        self.transaction_events = []
 
     def getObject(self, name):
         return self._objects.get(name)
 
     def openTransaction(self, _label):
-        pass
+        self.transaction_events.append(("open",))
 
     def commitTransaction(self):
-        pass
+        self.transaction_events.append(("commit",))
 
     def abortTransaction(self):
-        pass
+        self.transaction_events.append(("abort",))
 
     def addObject(self, type_id, name):
         if type_id == "Fem::FemAnalysis":
@@ -106,6 +107,38 @@ class _ObjectsFem:
         obj.MaterialModelNonlinearity = "isotropic hardening"
         obj.YieldPoints = []
         return obj
+
+
+class _BrokenMaterial:
+    """Fake base card that either rejects or drops native Material keys."""
+
+    TypeId = "App::MaterialObjectPython"
+
+    def __init__(self, name: str, mode: str) -> None:
+        self.Name = self.Label = name
+        self._mode = mode
+        self._material = {}
+
+    @property
+    def Material(self):
+        return self._material
+
+    @Material.setter
+    def Material(self, value):
+        if self._mode == "raise":
+            raise RuntimeError("native card rejected")
+        self._material = {"Name": value["Name"]}
+
+
+class _BrokenCardObjectsFem:
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+
+    def makeMaterialSolid(self, _doc, name):
+        return _BrokenMaterial(name, self.mode)
+
+    def makeMaterialMechanicalNonlinear(self, _doc, _base, _name):
+        raise AssertionError("nonlinear factory must not run for an invalid base card")
 
 
 def _operations() -> tuple[_App, FreeCADOperations]:
@@ -201,6 +234,35 @@ def test_operations_map_native_solver_controls_and_nonlinear_material() -> None:
     assert solver.AutomaticIncrementation is False
     assert solver.IncrementsMaximum == 50
     assert nonlinear["yield_points"] == ["275, 0", "490, 0.2"]
+
+
+@pytest.mark.parametrize("mode", ["raise", "drop"])
+def test_nonlinear_base_material_card_failure_aborts_transaction(mode: str) -> None:
+    app = _App()
+    app.ActiveDocument.Objects = []
+    app.ActiveDocument._objects = {}
+    operations = FreeCADOperations(
+        app=app,
+        objects_fem=_BrokenCardObjectsFem(mode),
+    )
+    operations.create_analysis("Analysis")
+    analysis = app.ActiveDocument.getObject("Analysis")
+    assert analysis is not None
+    before_group = list(analysis.Group)
+
+    with pytest.raises(OperationError):
+        operations.set_material(
+            "Analysis",
+            {
+                "hardening_model": "isotropic",
+                "yield_points": [
+                    {"stress_pa": 275e6, "plastic_strain": 0.0},
+                ],
+            },
+        )
+
+    assert analysis.Group == before_group
+    assert app.ActiveDocument.transaction_events[-1][0] == "abort"
 
 
 def test_service_double_validation_rejects_native_enum_and_unbounded_point() -> None:

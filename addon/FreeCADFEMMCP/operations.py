@@ -270,7 +270,11 @@ class FreeCADOperations:
         buckling_accuracy: Any = None,
         geometrical_nonlinearity: Any = "linear",
         material_nonlinearity: Any = "linear",
-        automatic_incrementation: Any = True,
+        # ``None`` means the caller omitted the control.  Leaving the native
+        # property untouched preserves FreeCAD's own default and keeps direct
+        # addon callers compatible with native solver objects that predate
+        # this control.  An explicit bool is always validated and assigned.
+        automatic_incrementation: Any = None,
         time_initial_increment_s: Any = None,
         time_minimum_increment_s: Any = None,
         time_maximum_increment_s: Any = None,
@@ -288,7 +292,9 @@ class FreeCADOperations:
             raise OperationError("geometrical_nonlinearity is unsupported")
         if material_nonlinearity not in {"linear", "nonlinear"}:
             raise OperationError("material_nonlinearity is unsupported")
-        if not isinstance(automatic_incrementation, bool):
+        if automatic_incrementation is not None and not isinstance(
+            automatic_incrementation, bool
+        ):
             raise OperationError("automatic_incrementation must be boolean")
         time_values = {
             "time_initial_increment_s": time_initial_increment_s,
@@ -325,10 +331,13 @@ class FreeCADOperations:
             if any(value is not None for value in (*frequency_fields, *buckling_fields)):
                 raise OperationError("static analysis does not accept analysis-specific fields")
         elif analysis_type == "frequency":
+            automatic_effective = (
+                True if automatic_incrementation is None else automatic_incrementation
+            )
             if (
                 geometrical_nonlinearity != "linear"
                 or material_nonlinearity != "linear"
-                or automatic_incrementation is not True
+                or automatic_effective is not True
                 or supplied_times
                 or increments_maximum is not None
             ):
@@ -358,10 +367,13 @@ class FreeCADOperations:
                 # deterministic setting.
                 low = high = 0.0
         else:  # buckling
+            automatic_effective = (
+                True if automatic_incrementation is None else automatic_incrementation
+            )
             if (
                 geometrical_nonlinearity != "linear"
                 or material_nonlinearity != "linear"
-                or automatic_incrementation is not True
+                or automatic_effective is not True
                 or supplied_times
                 or increments_maximum is not None
             ):
@@ -451,7 +463,7 @@ class FreeCADOperations:
         buckling_accuracy: Any = None,
         geometrical_nonlinearity: Any = "linear",
         material_nonlinearity: Any = "linear",
-        automatic_incrementation: Any = True,
+        automatic_incrementation: Any = None,
         time_initial_increment_s: Any = None,
         time_minimum_increment_s: Any = None,
         time_maximum_increment_s: Any = None,
@@ -523,7 +535,7 @@ class FreeCADOperations:
             # Current FreeCAD 1.1.3 exposes one native static step.  Every
             # supplied time/increment control is required to map to its exact
             # native property; no arbitrary CalculiX control text is accepted.
-            if hasattr(solver, "AutomaticIncrementation"):
+            if options["automatic_incrementation"] is not None:
                 self._set_native_required(
                     solver, "AutomaticIncrementation", options["automatic_incrementation"]
                 )
@@ -611,13 +623,28 @@ class FreeCADOperations:
             })
             try:
                 obj.Material = card
-            except Exception:
+            except Exception as exc:
+                if normalized_points is not None:
+                    # The nonlinear card is the base object consumed by the
+                    # native MaterialMechanicalNonlinear writer.  Falling
+                    # back to ad-hoc attributes would leave an invalid card
+                    # while still allowing the transaction to commit.
+                    raise OperationError("native base material card cannot be assigned") from exc
                 for key, value in card.items():
                     try:
                         setattr(obj, key, value)
                     except Exception:
                         pass
             if normalized_points is not None:
+                required_keys = ("Name", "YoungsModulus", "PoissonRatio", "Density")
+                try:
+                    retained_material = getattr(obj, "Material")
+                except Exception as exc:
+                    raise OperationError("native base material card is unavailable") from exc
+                if not isinstance(retained_material, Mapping) or any(
+                    key not in retained_material for key in required_keys
+                ):
+                    raise OperationError("native base material card is incomplete")
                 factory = getattr(self.objects_fem, "makeMaterialMechanicalNonlinear", None)
                 if not callable(factory):
                     raise OperationError("native nonlinear material factory is unavailable")
