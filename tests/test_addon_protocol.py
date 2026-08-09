@@ -85,6 +85,103 @@ def test_connection_route_forwards_tie_and_contact_contracts() -> None:
     assert operations.calls[-1][2]["surface_behavior"] == "hard"
 
 
+def test_connection_route_forwards_closed_cyclic_symmetry_contract() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        def __init__(self):
+            self.calls = []
+
+        def add_connection(self, analysis, kind, params):
+            self.calls.append((analysis, kind, params))
+            return {"name": "Native_" + kind}
+
+    operations = _Operations()
+    service = FEMService(
+        operations=operations,
+        selection=_Selection(),
+        jobs=object(),
+        pipeline=object(),
+    )
+    service(Request(83, "connection", {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "connection_type": "cyclic_symmetry",
+        "slave": {"object_name": "Upper", "subelements": ["Face3"]},
+        "master": {"object_name": "Lower", "subelements": ["Face7"]},
+        "tolerance_m": 0.002,
+        "adjust": True,
+        "sectors": 8,
+        "connected_sectors": 2,
+    }))
+    assert operations.calls[-1] == (
+        "Analysis",
+        "cyclic_symmetry",
+        {
+            "references": [
+                {"object": "Upper", "sub_element": "Face3"},
+                {"object": "Lower", "sub_element": "Face7"},
+            ],
+            "tolerance_m": 0.002,
+            "adjust": True,
+            "sectors": 8,
+            "connected_sectors": 2,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"sectors": 1, "connected_sectors": 1},
+        {"sectors": 4, "connected_sectors": 4},
+        {"sectors": 4, "connected_sectors": 1, "symmetry_axis": {}},
+    ],
+)
+def test_connection_route_rejects_cyclic_bounds_and_unknown_axis(bad) -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        @staticmethod
+        def add_connection(*_args, **_kwargs):
+            raise AssertionError("invalid cyclic connection reached native operations")
+
+    service = FEMService(
+        operations=_Operations(),
+        selection=_Selection(),
+        jobs=object(),
+        pipeline=object(),
+    )
+    params = {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "connection_type": "cyclic_symmetry",
+        "slave": {"object_name": "Upper", "subelements": ["Face1"]},
+        "master": {"object_name": "Lower", "subelements": ["Face2"]},
+        "tolerance_m": 0.0,
+        "adjust": False,
+        "sectors": 4,
+        "connected_sectors": 1,
+    }
+    params.update(bad)
+    with pytest.raises(ServiceError):
+        service(Request(84, "connection", params))
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -351,6 +448,48 @@ def test_typed_load_and_boundary_routes_use_native_constraint_kinds() -> None:
     assert acceleration["load_id"] == "Native_selfweight"
     assert operations.calls[-1][:2] == ("Analysis", "selfweight")
     assert operations.calls[-1][2]["gravity_acceleration"] == 9.81
+
+
+def test_plane_rotation_constraint_route_is_mpc_only_and_closed() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        def __init__(self):
+            self.calls = []
+
+        def add_constraint(self, analysis, kind, params):
+            self.calls.append((analysis, kind, params))
+            return {"name": "Native_" + kind}
+
+    operations = _Operations()
+    service = FEMService(operations=operations, selection=_Selection())
+    result = service(Request(5, "constraint", {
+        "action": "add",
+        "analysis_id": "Analysis",
+        "constraint_type": "plane_rotation",
+        "targets": [{"object_name": "Beam", "subelements": ["Edge1"]}],
+    }))
+    assert result["constraint_id"] == "Native_plane_rotation"
+    assert operations.calls[-1] == (
+        "Analysis",
+        "plane_rotation",
+        {"references": [{"object": "Beam", "sub_element": "Edge1"}]},
+    )
+    with pytest.raises(ServiceError):
+        service(Request(6, "constraint", {
+            "action": "add",
+            "analysis_id": "Analysis",
+            "constraint_type": "plane_rotation",
+            "targets": [{"object_name": "Beam", "subelements": ["Face1"]}],
+            "force_n": 1.0,
+        }))
 
 
 def test_analysis_route_forwards_frequency_and_buckling_controls() -> None:

@@ -194,6 +194,17 @@ GUI表示、事前検証、CalculiX writer、結果再現がすべて確認で�
 plane rotationはnative object/writerがあるため後続実装対象です。equal DOF、一般線形MPC、
 true rigid/distributing couplingはnative object/writerがないため将来計画です。
 
+**R4 native範囲完了:** `add_constraint`の`plane_rotation`をnative
+`ConstraintPlaneRotation` / CalculiX `*MPC,PLANE`へ写像し、実在するVertex・Edge・Face・Solid・
+whole-shape参照だけを許可します。これは節点群の共面性MPCであり、frictionless/symmetry support
+ではありません。`add_connection`の`cyclic_symmetry`はnative `ConstraintTie`のFace主従順序、
+`CyclicSymmetry`、`Sectors`、`ConnectedSectors`へ写像します。対称軸は検証済みnative既定値の
+原点・global +Zに限定し、任意Placementは公開しません。
+
+**R4将来計画:** equal DOF、一般線形MPC、true rigid/distributing couplingにはFreeCAD 1.1.3の
+native object/writerがないため実装しません。cyclic symmetryの任意軸入力も、GUI表示・writer・
+数値ベンチマークを含む単位付きpresetを定義できるまで公開しません。
+
 ### R5: Contact
 
 接触は最も不安定になりやすいため最後に追加します。初期版は3D solid-to-solid、

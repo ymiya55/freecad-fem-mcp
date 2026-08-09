@@ -430,13 +430,17 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             "Add a bounded analysis constraint. Use targets with exact FreeCAD "
             "object_name and subelements, for example "
             "[{object_name: 'Cantilever', subelements: ['Face1']}]. "
-            "Leave targets empty to use the current GUI selection; never use object_id."
+            "Leave targets empty to use the current GUI selection; never use object_id. "
+            "plane_rotation is a native CalculiX *MPC,PLANE coplanarity constraint "
+            "over referenced mesh nodes, not a frictionless or symmetry support."
         ),
         annotations=ann(readonly=False, destructive=False),
     )
     async def add_constraint(
         analysis_id: BoundedText,
-        constraint_type: Literal["fixed", "displacement", "force", "pressure", "selfweight"],
+        constraint_type: Literal[
+            "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation"
+        ],
         document_id: BoundedText | None = None,
         targets: Annotated[
             list[EntityRef],
@@ -651,23 +655,27 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
     @app.tool(
         name="add_connection",
         description=(
-            "Add a bounded tie or hard contact connection between exactly one "
+            "Add a bounded tie, cyclic-symmetry tie, or hard contact connection between exactly one "
             "slave FaceN and one master FaceN. Tie connections require finite "
-            "tolerance_m (0..1e6 m) and adjust; contact connections require "
-            "surface_behavior='hard'. Friction, slope, thermal, and arbitrary "
-            "native properties are not supported."
+            "tolerance_m (0..1e6 m) and adjust; cyclic_symmetry additionally "
+            "requires sectors>=2 and 1<=connected_sectors<sectors. Contact "
+            "connections require surface_behavior='hard'. Friction, slope, "
+            "thermal, arbitrary native properties, and custom axis placements "
+            "are not supported."
         ),
         annotations=ann(readonly=False, destructive=False),
     )
     async def add_connection(
         analysis_id: BoundedText,
-        connection_type: Literal["tie", "contact"],
+        connection_type: Literal["tie", "contact", "cyclic_symmetry"],
         slave: EntityRef,
         master: EntityRef,
         document_id: BoundedText | None = None,
         tolerance_m: ConnectionToleranceM | None = None,
         adjust: StrictBool | None = None,
         surface_behavior: Literal["hard"] | None = None,
+        sectors: Annotated[StrictInt, Field(ge=2, le=1_000_000)] | None = None,
+        connected_sectors: Annotated[StrictInt, Field(ge=1, le=1_000_000)] | None = None,
     ) -> Any:
         request = AddConnectionRequest(
             analysis_id=analysis_id,
@@ -678,6 +686,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             tolerance_m=tolerance_m,
             adjust=adjust,
             surface_behavior=surface_behavior,
+            sectors=sectors,
+            connected_sectors=connected_sectors,
         )
         return await invoke("connection", "add", request)
 

@@ -122,6 +122,8 @@ BucklingAccuracy = Annotated[
 ConnectionToleranceM = Annotated[
     StrictFloat, Field(ge=0.0, le=1e6), AfterValidator(_finite)
 ]
+CyclicSectors = Annotated[StrictInt, Field(ge=2, le=1_000_000)]
+ConnectedSectors = Annotated[StrictInt, Field(ge=1, le=1_000_000)]
 
 # R3 static nonlinear controls.  FreeCAD stores all four time values as
 # ``App::PropertyTime`` quantities.  The MCP contract deliberately carries SI
@@ -479,9 +481,9 @@ class ConstraintRequest(StrictModel):
     document_id: BoundedText | None = None
     analysis_id: BoundedText
     constraint_id: BoundedText | None = None
-    constraint_type: Literal["fixed", "displacement", "force", "pressure", "selfweight"] | None = (
-        None
-    )
+    constraint_type: Literal[
+        "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation"
+    ] | None = None
     # Empty targets deliberately mean "the current GUI selection".  The Addon
     # resolves that selection on the FreeCAD main thread.
     targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
@@ -496,6 +498,20 @@ class ConstraintRequest(StrictModel):
     force_n: ValueList = Field(default_factory=list)
     pressure_pa: ValueList = Field(default_factory=list)
     selfweight_acceleration_m_s2: ValueList = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_plane_rotation_values(self) -> "ConstraintRequest":
+        if self.constraint_type == "plane_rotation" and any(
+            value
+            for value in (
+                self.displacement_m,
+                self.force_n,
+                self.pressure_pa,
+                self.selfweight_acceleration_m_s2,
+            )
+        ):
+            raise ValueError("value fields are unsupported for plane_rotation")
+        return self
 
 
 class MeshRequest(StrictModel):
@@ -591,7 +607,9 @@ class AssignMaterialRequest(StrictModel):
 class AddConstraintRequest(StrictModel):
     document_id: BoundedText | None = None
     analysis_id: BoundedText
-    constraint_type: Literal["fixed", "displacement", "force", "pressure", "selfweight"]
+    constraint_type: Literal[
+        "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation"
+    ]
     targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
         default_factory=list,
         description=(
@@ -604,6 +622,20 @@ class AddConstraintRequest(StrictModel):
     force_n: ValueList = Field(default_factory=list)
     pressure_pa: ValueList = Field(default_factory=list)
     selfweight_acceleration_m_s2: ValueList = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_plane_rotation_values(self) -> "AddConstraintRequest":
+        if self.constraint_type == "plane_rotation" and any(
+            value
+            for value in (
+                self.displacement_m,
+                self.force_n,
+                self.pressure_pa,
+                self.selfweight_acceleration_m_s2,
+            )
+        ):
+            raise ValueError("value fields are unsupported for plane_rotation")
+        return self
 
 
 class AddLoadRequest(_AmplitudeRequestModel):
@@ -935,16 +967,18 @@ class AddBoundaryConditionRequest(_AmplitudeRequestModel):
 
 
 class AddConnectionRequest(StrictModel):
-    """Closed tie/contact connection contract for two single-face entities."""
+    """Closed native tie/contact/cyclic-symmetry contract for two faces."""
 
     document_id: BoundedText | None = None
     analysis_id: BoundedText
-    connection_type: Literal["tie", "contact"]
+    connection_type: Literal["tie", "contact", "cyclic_symmetry"]
     slave: EntityRef
     master: EntityRef
     tolerance_m: ConnectionToleranceM | None = None
     adjust: StrictBool | None = None
     surface_behavior: Literal["hard"] | None = None
+    sectors: CyclicSectors | None = None
+    connected_sectors: ConnectedSectors | None = None
 
     @model_validator(mode="after")
     def validate_connection_variant(self) -> "AddConnectionRequest":
@@ -958,18 +992,31 @@ class AddConnectionRequest(StrictModel):
         if slave_face == master_face:
             raise ValueError("slave and master must refer to different faces")
 
-        if self.connection_type == "tie":
+        if self.connection_type in {"tie", "cyclic_symmetry"}:
             if self.tolerance_m is None:
                 raise ValueError("tolerance_m is required for tie connections")
             if self.adjust is None:
                 raise ValueError("adjust is required for tie connections")
             if self.surface_behavior is not None:
                 raise ValueError("surface_behavior is not valid for tie connections")
+            if self.connection_type == "cyclic_symmetry":
+                if self.sectors is None:
+                    raise ValueError("sectors is required for cyclic_symmetry connections")
+                if self.connected_sectors is None:
+                    raise ValueError(
+                        "connected_sectors is required for cyclic_symmetry connections"
+                    )
+                if self.connected_sectors >= self.sectors:
+                    raise ValueError("connected_sectors must be less than sectors")
+            elif self.sectors is not None or self.connected_sectors is not None:
+                raise ValueError("cyclic symmetry fields are not valid for tie connections")
         else:
             if self.surface_behavior != "hard":
                 raise ValueError("surface_behavior='hard' is required for contact connections")
             if self.tolerance_m is not None or self.adjust is not None:
                 raise ValueError("tolerance_m and adjust are not valid for contact connections")
+            if self.sectors is not None or self.connected_sectors is not None:
+                raise ValueError("cyclic symmetry fields are not valid for contact connections")
         return self
 
 

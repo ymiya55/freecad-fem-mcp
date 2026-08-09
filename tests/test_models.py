@@ -90,6 +90,16 @@ def test_connection_contract_is_closed_and_face_only() -> None:
     assert tie.connection_type == "tie"
     contact = AddConnectionRequest(**base, connection_type="contact", surface_behavior="hard")
     assert contact.surface_behavior == "hard"
+    cyclic = AddConnectionRequest(
+        **base,
+        connection_type="cyclic_symmetry",
+        tolerance_m=0.001,
+        adjust=False,
+        sectors=8,
+        connected_sectors=2,
+    )
+    assert cyclic.sectors == 8
+    assert cyclic.connected_sectors == 2
 
     invalid = (
         {**base, "connection_type": "tie", "adjust": True},
@@ -104,6 +114,23 @@ def test_connection_contract_is_closed_and_face_only() -> None:
         {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True,
          "master": {"object_name": "Slave", "subelements": ["Face1"]}},
         {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True, "friction": 0.2},
+        {**base, "connection_type": "cyclic_symmetry", "tolerance_m": 0.1, "adjust": True},
+        {
+            **base,
+            "connection_type": "cyclic_symmetry",
+            "tolerance_m": 0.1,
+            "adjust": True,
+            "sectors": 4,
+            "connected_sectors": 4,
+        },
+        {
+            **base,
+            "connection_type": "cyclic_symmetry",
+            "tolerance_m": 0.1,
+            "adjust": True,
+            "sectors": 1,
+            "connected_sectors": 1,
+        },
     )
     for params in invalid:
         with pytest.raises(ValidationError):
@@ -120,6 +147,8 @@ def test_constraint_targets_are_explicit_and_empty_is_selection() -> None:
         force_n=[10.0, 0.0, 0.0],
     )
     assert target.targets[0].object_name == "Bracket"
+    plane = ConstraintRequest(analysis_id="Analysis", constraint_type="plane_rotation")
+    assert plane.targets == []
 
 
 def test_typed_loads_require_only_their_matching_si_value() -> None:

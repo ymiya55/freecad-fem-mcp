@@ -148,6 +148,16 @@ TieとContactは`add_connection`を使い、`slave`と`master`へ実在するFac
 Tieは`tolerance_m`と`adjust`が必須です。初期Contactは`surface_behavior=hard`だけを許可し、
 frictionless・non-thermal・static解析に限定します。同一面、stale参照、Edge/Vertexは拒否します。
 
+cyclic symmetryも`add_connection`を使い、`connection_type=cyclic_symmetry`、Faceのslave/master、
+`tolerance_m`、`adjust`、`sectors`、`connected_sectors`を指定します。`sectors`は2〜1,000,000、
+`connected_sectors`は1以上かつ`sectors`未満です。現在はFreeCAD native既定の原点・global +Z
+対称軸だけを使用し、任意Placement入力は公開しません。
+
+`add_constraint`の`plane_rotation`は、Vertex/Edge/Face/Solidまたはwhole-shapeから得たmesh node
+setを同一平面に保つnative CalculiX `*MPC,PLANE`です。移動・回転可能な平面なので、固定基準面の
+frictionless、symmetry、antisymmetry supportの代用にはしません。表示専用のnormal/point propertyや
+任意MPC式は入力できません。
+
 拘束対象を明示的に呼ぶ場合、`targets`の要素は次の形です。`object_id`ではなく`object_name`を使用します。
 
 ```json

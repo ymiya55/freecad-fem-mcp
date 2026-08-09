@@ -44,6 +44,10 @@ class ValidationError(OperationError):
 _CONSTRAINT_TYPES = {
     "fixed": "Fem::ConstraintFixed",
     "displacement": "Fem::ConstraintDisplacement",
+    # PlaneRotation is a native CalculiX MPC (*MPC,PLANE).  It preserves
+    # coplanarity of the referenced node set; it is intentionally not exposed
+    # as a frictionless/symmetry support preset.
+    "plane_rotation": "Fem::ConstraintPlaneRotation",
     # Native CalculiX writes pin/roller presets through the displacement
     # constraint's Cartesian DOF flags; no generic MPC or custom INP is used.
     "pin": "Fem::ConstraintDisplacement",
@@ -820,6 +824,14 @@ class FreeCADOperations:
         if kind not in _CONSTRAINT_TYPES:
             raise OperationError("unsupported constraint kind")
         data = dict(params or {})
+        if kind == "plane_rotation":
+            unsupported = set(data) - {"name", "references", "refs"}
+            if unsupported:
+                raise OperationError(
+                    "unsupported plane_rotation fields: {}".format(
+                        ", ".join(sorted(str(item) for item in unsupported))
+                    )
+                )
         if kind in {"pin", "roller"}:
             preset_fields = sorted(_PRESET_DOF_FIELDS.intersection(data))
             if preset_fields:
@@ -840,7 +852,7 @@ class FreeCADOperations:
         # selection is valid for gravity; all other constraint kinds still
         # require resolved entity references.
         references = [] if kind == "selfweight" else self._references(doc, raw_references)
-        if kind in {"fixed", "displacement", "pin", "roller"}:
+        if kind in {"fixed", "displacement", "pin", "roller", "plane_rotation"}:
             self._validate_boundary_references(references)
         if kind == "roller":
             axis = data.get("axis")
@@ -853,11 +865,12 @@ class FreeCADOperations:
                 raise OperationError("roller requires axis or axis-aligned normal_m")
             data["axis"] = axis
             data.pop("normal_m", None)
-        elif kind in {"fixed", "displacement", "pin"}:
+        elif kind in {"fixed", "displacement", "pin", "plane_rotation"}:
             if "axis" in data or "normal_m" in data:
                 raise OperationError("axis/normal_m are unsupported for this constraint kind")
         helper = {
             "fixed": "makeConstraintFixed", "displacement": "makeConstraintDisplacement",
+            "plane_rotation": "makeConstraintPlaneRotation",
             "pin": "makeConstraintDisplacement", "roller": "makeConstraintDisplacement",
             "force": "makeConstraintForce", "pressure": "makeConstraintPressure",
             "selfweight": "makeConstraintSelfWeight",
@@ -870,6 +883,12 @@ class FreeCADOperations:
                 except Exception as exc:
                     raise OperationError("native constraint references are unavailable") from exc
             if kind == "fixed":
+                pass
+            elif kind == "plane_rotation":
+                # The native writer derives the three MPC plane nodes from
+                # the referenced mesh nodes.  NormalDirection/Normals/Points
+                # are display-only native properties and are deliberately not
+                # accepted from the public contract.
                 pass
             elif kind in {"displacement", "pin", "roller"}:
                 for axis in "xyz":
@@ -1004,10 +1023,21 @@ class FreeCADOperations:
 
         doc = self._document()
         analysis_obj = self._find(doc, analysis)
-        if not isinstance(kind, str) or kind not in {"tie", "contact"}:
+        if not isinstance(kind, str) or kind not in {"tie", "contact", "cyclic_symmetry"}:
             raise OperationError("unsupported connection kind")
         if not isinstance(params, Mapping):
             raise OperationError("connection parameters must be an object")
+        allowed_fields = {
+            "references", "slave", "master", "name", "tolerance_m",
+            "adjust", "surface_behavior", "sectors", "connected_sectors",
+        }
+        unsupported = set(params) - allowed_fields
+        if unsupported:
+            raise OperationError(
+                "unsupported connection fields: {}".format(
+                    ", ".join(sorted(str(item) for item in unsupported))
+                )
+            )
         solver = self._analysis_solver(analysis_obj)
         analysis_type = str(getattr(solver, "AnalysisType", "")).strip().lower()
         if analysis_type != "static":
@@ -1023,7 +1053,7 @@ class FreeCADOperations:
         self._validate_connection_references(references)
         name = _safe_name(params.get("name"), "Constraint" + kind.title())
 
-        if kind == "tie":
+        if kind in {"tie", "cyclic_symmetry"}:
             if "tolerance_m" not in params or params["tolerance_m"] is None:
                 raise OperationError("tolerance_m is required for tie")
             if "adjust" not in params or params["adjust"] is None:
@@ -1034,20 +1064,46 @@ class FreeCADOperations:
             if not isinstance(adjust, bool):
                 raise OperationError("adjust must be boolean")
             helper = "makeConstraintTie"
+            if kind == "cyclic_symmetry":
+                # Cyclic symmetry is the native ConstraintTie writer mode.
+                # Keep the sector controls closed and integer-only; the
+                # native SymmetryAxis Placement remains at its verified
+                # default (origin, global +Z) because arbitrary Placement
+                # transforms are not part of the public contract.
+                sectors = params.get("sectors")
+                connected_sectors = params.get("connected_sectors")
+                if isinstance(sectors, bool) or not isinstance(sectors, int):
+                    raise OperationError("sectors must be an integer")
+                if not 2 <= sectors <= 1_000_000:
+                    raise OperationError("sectors is outside the allowed range")
+                if isinstance(connected_sectors, bool) or not isinstance(connected_sectors, int):
+                    raise OperationError("connected_sectors must be an integer")
+                if not 1 <= connected_sectors < sectors:
+                    raise OperationError(
+                        "connected_sectors must be between 1 and sectors - 1"
+                    )
+            elif any(key in params for key in ("sectors", "connected_sectors")):
+                raise OperationError("cyclic symmetry fields are unsupported for tie")
         else:
             if params.get("surface_behavior") != "hard":
                 raise OperationError("surface_behavior is unsupported")
-            if any(key in params for key in ("tolerance_m", "tolerance", "adjust")):
+            if any(
+                key in params
+                for key in ("tolerance_m", "tolerance", "adjust", "sectors", "connected_sectors")
+            ):
                 raise OperationError("tie fields are unsupported for contact")
             helper = "makeConstraintContact"
 
         with self._transaction(doc, "Add {} connection".format(kind)):
             obj = self._connection_factory(self.objects_fem, helper, doc, name)
             self._set_connection_property(obj, "References", references)
-            if kind == "tie":
+            if kind in {"tie", "cyclic_symmetry"}:
                 self._set_connection_property(obj, "Tolerance", tolerance * 1000.0)
                 self._set_connection_property(obj, "Adjust", adjust)
-                self._set_connection_property(obj, "CyclicSymmetry", False)
+                self._set_connection_property(obj, "CyclicSymmetry", kind == "cyclic_symmetry")
+                if kind == "cyclic_symmetry":
+                    self._set_connection_property(obj, "Sectors", sectors)
+                    self._set_connection_property(obj, "ConnectedSectors", connected_sectors)
             else:
                 self._set_connection_property(obj, "SurfaceBehavior", "Hard")
                 self._set_connection_property(obj, "Friction", False)
@@ -1613,11 +1669,11 @@ class FreeCADOperations:
         if not references:
             return ["constraint {} has no references".format(name)]
         diagnostics: list[str] = []
-        expected_face = (
-            "planerotation" in token
-            or "constraintcontact" in token
-            or "constrainttie" in token
-        )
+        # Tie/contact are surface writers and require FaceN references.
+        # PlaneRotation's native *MPC,PLANE writer accepts any reference
+        # subshape that resolves to mesh nodes (Vertex/Edge/Face/Solid), so it
+        # deliberately remains unrestricted here after native shape checks.
+        expected_face = "constraintcontact" in token or "constrainttie" in token
         expected_solid = is_centrifugal
         for index, reference in enumerate(references, start=1):
             if not isinstance(reference, (tuple, list)) or len(reference) != 2:

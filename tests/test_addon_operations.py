@@ -297,6 +297,29 @@ class _NativeTie:
         self.CyclicSymmetry = False
 
 
+class _NativeCyclicTie(_NativeTie):
+    _allowed = _NativeTie._allowed | {"Sectors", "ConnectedSectors"}
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.Sectors = 0
+        self.ConnectedSectors = 1
+
+
+class _NativePlaneRotation:
+    _allowed = {"Name", "Label", "TypeId", "References"}
+
+    def __setattr__(self, name, value):
+        if name not in self._allowed:
+            raise AssertionError("unexpected native plane-rotation property: {}".format(name))
+        object.__setattr__(self, name, value)
+
+    def __init__(self, name: str):
+        self.Name = self.Label = name
+        self.TypeId = "Fem::ConstraintPlaneRotation"
+        self.References = []
+
+
 class _NativeContact:
     _allowed = {
         "Name", "Label", "TypeId", "References", "SurfaceBehavior", "Friction",
@@ -368,6 +391,16 @@ class _ObjectsFemWithConnections:
     @staticmethod
     def makeConstraintContact(_doc, name):
         return _NativeContact(name)
+
+
+class _ObjectsFemWithR4Connections(_ObjectsFemWithConnections):
+    @staticmethod
+    def makeConstraintTie(_doc, name):
+        return _NativeCyclicTie(name)
+
+    @staticmethod
+    def makeConstraintPlaneRotation(_doc, name):
+        return _NativePlaneRotation(name)
 
 
 def _analysis_solver(app: _AnalysisApp):
@@ -466,6 +499,134 @@ def test_connection_missing_factory_or_property_aborts_transaction() -> None:
         )
     assert app.ActiveDocument.transaction_events[-1][0] == "abort"
     assert len(app.ActiveDocument.analysis.Group) == 1
+
+
+def test_cyclic_symmetry_maps_native_tie_fields_and_preserves_face_order() -> None:
+    app, operations = _connection_operations(_ObjectsFemWithR4Connections)
+    result = operations.add_connection(
+        "Analysis",
+        "cyclic_symmetry",
+        {
+            "references": _connection_refs("Face2", "Face1"),
+            "tolerance_m": 0.002,
+            "adjust": False,
+            "sectors": 4,
+            "connected_sectors": 2,
+        },
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert result["kind"] == "cyclic_symmetry"
+    assert native.TypeId == "Fem::ConstraintTie"
+    assert native.References == [
+        (app.ActiveDocument.geometry, "Face2"),
+        (app.ActiveDocument.geometry, "Face1"),
+    ]
+    assert native.Tolerance == 2.0
+    assert native.Adjust is False
+    assert native.CyclicSymmetry is True
+    assert native.Sectors == 4
+    assert native.ConnectedSectors == 2
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"references": _connection_refs("Face1", "Edge1")},
+        {"references": _connection_refs("Face1", "Face1")},
+        {"sectors": 1, "connected_sectors": 1},
+        {"sectors": 4, "connected_sectors": 0},
+        {"sectors": 4, "connected_sectors": 4},
+        {"sectors": 1_000_001, "connected_sectors": 1},
+    ],
+)
+def test_cyclic_symmetry_rejects_invalid_faces_or_sector_bounds(bad) -> None:
+    app, operations = _connection_operations(_ObjectsFemWithR4Connections)
+    params = {
+        "references": _connection_refs("Face1", "Face2"),
+        "tolerance_m": 0.0,
+        "adjust": True,
+        "sectors": 4,
+        "connected_sectors": 1,
+    }
+    params.update(bad)
+    before = list(app.ActiveDocument.analysis.Group)
+    with pytest.raises(OperationError):
+        operations.add_connection("Analysis", "cyclic_symmetry", params)
+    assert app.ActiveDocument.analysis.Group == before
+
+
+def test_cyclic_symmetry_is_static_only_and_rolls_back() -> None:
+    app, operations = _connection_operations(_ObjectsFemWithR4Connections)
+    app.ActiveDocument.analysis.Group[0].AnalysisType = "frequency"
+    with pytest.raises(OperationError):
+        operations.add_connection(
+            "Analysis",
+            "cyclic_symmetry",
+            {
+                "references": _connection_refs("Face1", "Face2"),
+                "tolerance_m": 0.0,
+                "adjust": True,
+                "sectors": 2,
+                "connected_sectors": 1,
+            },
+        )
+    assert len(app.ActiveDocument.analysis.Group) == 1
+
+
+def test_plane_rotation_accepts_native_mesh_reference_shapes() -> None:
+    app, operations = _connection_operations(_ObjectsFemWithR4Connections)
+    for sub_element in ("Face1", "Edge1", "Vertex1", "Solid1", ""):
+        result = operations.add_constraint(
+            "Analysis",
+            "plane_rotation",
+            {"references": [{"object": "Geometry", "sub_element": sub_element}]},
+        )
+        native = app.ActiveDocument.analysis.Group[-1]
+        assert result["kind"] == "plane_rotation"
+        assert native.TypeId == "Fem::ConstraintPlaneRotation"
+        assert native.References == [(app.ActiveDocument.geometry, sub_element)]
+
+
+@pytest.mark.parametrize(
+    "references",
+    [
+        [],
+        [{"object": "Geometry", "sub_element": "Face999"}],
+        [{"object": "Geometry", "sub_element": "Wire1"}],
+    ],
+)
+def test_plane_rotation_rejects_empty_or_stale_native_references(references) -> None:
+    app, operations = _connection_operations(_ObjectsFemWithR4Connections)
+    before = list(app.ActiveDocument.analysis.Group)
+    with pytest.raises(OperationError):
+        operations.add_constraint("Analysis", "plane_rotation", {"references": references})
+    assert app.ActiveDocument.analysis.Group == before
+
+
+def test_r4_operations_reject_unknown_native_escape_fields() -> None:
+    _app, operations = _connection_operations(_ObjectsFemWithR4Connections)
+    with pytest.raises(OperationError):
+        operations.add_constraint(
+            "Analysis",
+            "plane_rotation",
+            {
+                "references": [{"object": "Geometry", "sub_element": "Face1"}],
+                "Normals": [(0.0, 0.0, 1.0)],
+            },
+        )
+    with pytest.raises(OperationError):
+        operations.add_connection(
+            "Analysis",
+            "cyclic_symmetry",
+            {
+                "references": _connection_refs("Face1", "Face2"),
+                "tolerance_m": 0.0,
+                "adjust": True,
+                "sectors": 2,
+                "connected_sectors": 1,
+                "symmetry_axis": {},
+            },
+        )
 
     class _TieWithoutCyclic(_NativeTie):
         def __init__(self, name):

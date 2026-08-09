@@ -49,6 +49,7 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
         {
             "action", "document_id", "analysis_id", "connection_type",
             "slave", "master", "tolerance_m", "adjust", "surface_behavior",
+            "sectors", "connected_sectors",
         },
         {"action", "analysis_id", "connection_type", "slave", "master"},
     ),
@@ -479,14 +480,16 @@ class FEMService:
     @classmethod
     def _validate_connection_contract(cls, params: Mapping[str, Any]) -> None:
         connection_type = params.get("connection_type")
-        if not isinstance(connection_type, str) or connection_type not in {"tie", "contact"}:
+        if not isinstance(connection_type, str) or connection_type not in {
+            "tie", "contact", "cyclic_symmetry"
+        }:
             raise ServiceError("connection_type is unsupported")
         slave_name, slave_face = cls._validate_connection_target(params.get("slave"), "slave")
         master_name, master_face = cls._validate_connection_target(params.get("master"), "master")
         if slave_name == master_name and slave_face == master_face:
             raise ServiceError("slave and master faces must be distinct")
 
-        if connection_type == "tie":
+        if connection_type in {"tie", "cyclic_symmetry"}:
             if "surface_behavior" in params:
                 raise ServiceError("surface_behavior is unsupported for tie")
             if "tolerance_m" not in params or params["tolerance_m"] is None:
@@ -499,6 +502,15 @@ class FEMService:
             if "adjust" not in params or params["adjust"] is None:
                 raise ServiceError("adjust is required for tie")
             cls._strict_bool(params["adjust"], "adjust")
+            if connection_type == "cyclic_symmetry":
+                sectors = params.get("sectors")
+                connected_sectors = params.get("connected_sectors")
+                cls._strict_int(sectors, "sectors", 2, 1_000_000)
+                cls._strict_int(connected_sectors, "connected_sectors", 1, 1_000_000)
+                if connected_sectors >= sectors:
+                    raise ServiceError("connected_sectors must be less than sectors")
+            elif "sectors" in params or "connected_sectors" in params:
+                raise ServiceError("cyclic symmetry fields are unsupported for tie")
             return
 
         # Initial contact exposure is deliberately hard, frictionless, and
@@ -507,6 +519,9 @@ class FEMService:
         if params.get("surface_behavior") != "hard":
             raise ServiceError("surface_behavior must be hard for contact")
         for forbidden in ("tolerance_m", "adjust"):
+            if forbidden in params:
+                raise ServiceError("{} is unsupported for contact".format(forbidden))
+        for forbidden in ("sectors", "connected_sectors"):
             if forbidden in params:
                 raise ServiceError("{} is unsupported for contact".format(forbidden))
 
@@ -525,13 +540,16 @@ class FEMService:
                 },
             ]
         }
-        if params["connection_type"] == "tie":
+        if params["connection_type"] in {"tie", "cyclic_symmetry"}:
             if "tolerance_m" in params and params["tolerance_m"] is not None:
                 data["tolerance_m"] = cls._finite_value(
                     params["tolerance_m"], "tolerance_m", strict_numeric=True
                 )
             if "adjust" in params:
                 data["adjust"] = params["adjust"]
+            if params["connection_type"] == "cyclic_symmetry":
+                data["sectors"] = params["sectors"]
+                data["connected_sectors"] = params["connected_sectors"]
         else:
             data["surface_behavior"] = "hard"
         return data
@@ -549,7 +567,9 @@ class FEMService:
         self._require_identifier(params, "analysis_id")
         if "document_id" in params:
             self._require_identifier(params, "document_id")
-        if params["constraint_type"] not in {"fixed", "displacement", "force", "pressure", "selfweight"}:
+        if params["constraint_type"] not in {
+            "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation"
+        }:
             raise ServiceError("constraint_type is unsupported")
         if "constraint_id" in params and params["constraint_id"] is not None:
             self._optional_text(params, "constraint_id")
@@ -574,6 +594,16 @@ class FEMService:
                     self._finite_value(component, key)
             else:
                 self._finite_value(value, key)
+        if params["constraint_type"] == "plane_rotation" and any(
+            key in params and params[key] not in (None, [], ())
+            for key in (
+                "displacement_m",
+                "force_n",
+                "pressure_pa",
+                "selfweight_acceleration_m_s2",
+            )
+        ):
+            raise ServiceError("value fields are unsupported for plane_rotation")
 
     def __call__(self, request: Request) -> Any:
         params = request.params
@@ -608,8 +638,8 @@ class FEMService:
                     "boundary_conditions": [
                         "fixed", "displacement", "pin", "roller", "remote_displacement",
                     ],
-                    "connections": ["tie", "contact"],
-                    "mpc_types": [],
+                    "connections": ["tie", "contact", "cyclic_symmetry"],
+                    "mpc_types": ["plane_rotation"],
                     "result_kinds": ["displacement", "stress", "strain", "von_mises", "reaction"],
                 },
             }
