@@ -86,7 +86,7 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 
 現在のGUI縦切りリリースゲートは、Gmsh/CalculiXの正常終了、有限な結果値、非空の結果フィールド、GUI表示・画像取得、および安全性試験の全合格です。定量精度ベンチマークは、軸力棒の応力`F/A`と変位`FL/EA`に対して2.5 mmメッシュで2%以内を合格基準とします。
 
-## 検証済みベースライン（2026-08-03）
+## 検証済みベースライン（2026-08-09）
 
 - FreeCAD 1.1.3 / Python 3.11.14 / Gmsh 4.15.0 / CalculiX 2.22
 - GUI自動起動した認証bridge経由でGmshとCalculiXが完了
@@ -108,6 +108,8 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 - native `ConstraintTie`のcyclic symmetryをFace主従対、sector数、connected sector数、既定の原点・global +Z軸に限定して生成
 - native `ConstraintContact`のHard／Linear／Tied、摩擦係数、法線・stick剛性、adjustを実writerで確認し、Pa/m→native quantity、m→mm変換を検証
 - R6 native非対応9項目を`get_status.capabilities.future_gates`へstatus-onlyで掲載し、全bridge routeで同名fieldをunknownとして拒否
+- fresh Codex CLI 0.146.0から更新Addonへ実接続し、R3非線形Analysis・材料、R4 PlaneRotation・cyclic symmetry、R5 Linear摩擦Contactを一時GUI文書へ生成
+- 同じMCP受け入れ試験でnative object type、文書revision、isometric view、1024×768 PNG captureを確認し、FCStdは未保存のまま維持
 - `add_connection`からnative TieとHard frictionless ContactをGUI生成し、同一面・stale Faceを拒否してrevision不変を確認
 - `add_boundary_condition`からnative pinとglobal Cartesian rollerを`Fem::ConstraintDisplacement`として生成し、回転自由度、参照実在性、ゼロDOF、重複拘束、剛体運動、body-load密度を事前診断
 - Codex CLI 0.146.0から認証付きMCPへ実接続し、status、文書検査、選択、GUI capture、ツール単位承認後のview操作を確認
