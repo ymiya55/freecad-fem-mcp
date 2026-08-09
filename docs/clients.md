@@ -145,8 +145,12 @@ iteration文字列、独立LoadCase、複数解析Stepは受け付けません�
 ある場合だけ、job/result応答にboundedな`convergence`要約を含めます。
 
 TieとContactは`add_connection`を使い、`slave`と`master`へ実在するFaceを各1面指定します。
-Tieは`tolerance_m`と`adjust`が必須です。初期Contactは`surface_behavior=hard`だけを許可し、
-frictionless・non-thermal・static解析に限定します。同一面、stale参照、Edge/Vertexは拒否します。
+Tieは`tolerance_m`と`adjust`が必須です。Contactはstatic・non-thermalに限定し、
+`surface_behavior`へ`hard`、`linear`、`tied`を指定します。Linear/Tiedでは正の
+`normal_stiffness_pa_per_m`が必須です。摩擦を使う場合は`friction=true`とし、0より大きく10以下の
+`friction_coefficient`、正の`stick_stiffness_pa_per_m`を指定します。`adjust_m`は0〜1e6 mです。
+剛性はSIのPa/mで入力し、MCPがFreeCAD native quantityへ変換します。摩擦fieldはTie/Cyclicへ、
+Tie fieldはContactへ指定できません。同一面、stale参照、Edge/Vertexは拒否します。
 
 cyclic symmetryも`add_connection`を使い、`connection_type=cyclic_symmetry`、Faceのslave/master、
 `tolerance_m`、`adjust`、`sectors`、`connected_sectors`を指定します。`sectors`は2〜1,000,000、

@@ -323,7 +323,7 @@ class _NativePlaneRotation:
 class _NativeContact:
     _allowed = {
         "Name", "Label", "TypeId", "References", "SurfaceBehavior", "Friction",
-        "EnableThermalContact",
+        "EnableThermalContact", "FrictionCoefficient", "Slope", "StickSlope", "Adjust",
     }
 
     def __setattr__(self, name, value):
@@ -338,6 +338,10 @@ class _NativeContact:
         self.SurfaceBehavior = "Hard"
         self.Friction = False
         self.EnableThermalContact = False
+        self.FrictionCoefficient = 0.0
+        self.Slope = 0.0
+        self.StickSlope = 0.0
+        self.Adjust = 0.0
 
 
 class _ConnectionAnalysis:
@@ -454,6 +458,72 @@ def test_contact_connection_maps_hard_frictionless_native_properties() -> None:
     assert native.SurfaceBehavior == "Hard"
     assert native.Friction is False
     assert native.EnableThermalContact is False
+
+
+def test_contact_connection_maps_linear_friction_and_si_stiffness() -> None:
+    app, operations = _connection_operations()
+    result = operations.add_connection(
+        "Analysis",
+        "contact",
+        {
+            "references": _connection_refs("Face2", "Face1"),
+            "surface_behavior": "linear",
+            "normal_stiffness_pa_per_m": 1.0e9,
+            "friction": True,
+            "friction_coefficient": 0.25,
+            "stick_stiffness_pa_per_m": 3.0e9,
+            "adjust_m": 0.004,
+        },
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert result["kind"] == "contact"
+    assert native.SurfaceBehavior == "Linear"
+    assert native.Friction is True
+    assert native.FrictionCoefficient == 0.25
+    assert native.Slope == "1000000000.0 Pa/m"
+    assert native.StickSlope == "3000000000.0 Pa/m"
+    assert native.Adjust == "0.004 m"
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"surface_behavior": "linear"},
+        {"surface_behavior": "tied"},
+        {"surface_behavior": "hard", "normal_stiffness_pa_per_m": 1.0},
+        {"surface_behavior": "linear", "normal_stiffness_pa_per_m": 0.0},
+        {
+            "surface_behavior": "hard",
+            "friction": True,
+            "friction_coefficient": 0.2,
+        },
+        {"surface_behavior": "hard", "friction_coefficient": 0.2},
+        {"surface_behavior": "hard", "adjust_m": float("nan")},
+    ],
+)
+def test_contact_connection_rejects_invalid_native_field_combinations(params) -> None:
+    _app, operations = _connection_operations()
+    with pytest.raises(OperationError):
+        operations.add_connection(
+            "Analysis",
+            "contact",
+            {"references": _connection_refs("Face1", "Face2"), **params},
+        )
+
+
+def test_tie_connection_rejects_explicit_friction_field_even_false() -> None:
+    _app, operations = _connection_operations()
+    with pytest.raises(OperationError):
+        operations.add_connection(
+            "Analysis",
+            "tie",
+            {
+                "references": _connection_refs("Face1", "Face2"),
+                "tolerance_m": 0.0,
+                "adjust": False,
+                "friction": False,
+            },
+        )
 
 
 @pytest.mark.parametrize(

@@ -122,6 +122,21 @@ BucklingAccuracy = Annotated[
 ConnectionToleranceM = Annotated[
     StrictFloat, Field(ge=0.0, le=1e6), AfterValidator(_finite)
 ]
+# Native ``Fem::ConstraintContact`` controls.  The public boundary uses SI
+# units (metres, pascals per metre) and a dimensionless friction coefficient;
+# the Addon converts stiffness values to FreeCAD's StiffnessDensity property.
+ContactAdjustM = Annotated[
+    StrictFloat, Field(ge=0.0, le=1e6), AfterValidator(_finite)
+]
+ContactNormalStiffnessPaPerM = Annotated[
+    StrictFloat, Field(gt=0.0, le=1e15), AfterValidator(_finite)
+]
+ContactStickStiffnessPaPerM = Annotated[
+    StrictFloat, Field(gt=0.0, le=1e15), AfterValidator(_finite)
+]
+ContactFrictionCoefficient = Annotated[
+    StrictFloat, Field(gt=0.0, le=10.0), AfterValidator(_finite)
+]
 CyclicSectors = Annotated[StrictInt, Field(ge=2, le=1_000_000)]
 ConnectedSectors = Annotated[StrictInt, Field(ge=1, le=1_000_000)]
 
@@ -967,7 +982,12 @@ class AddBoundaryConditionRequest(_AmplitudeRequestModel):
 
 
 class AddConnectionRequest(StrictModel):
-    """Closed native tie/contact/cyclic-symmetry contract for two faces."""
+    """Closed native tie/contact/cyclic-symmetry contract for two faces.
+
+    Contact stiffness values are SI ``Pa/m`` and friction coefficients are
+    dimensionless.  They are converted to FreeCAD's native quantities by the
+    Addon; arbitrary native contact properties remain intentionally absent.
+    """
 
     document_id: BoundedText | None = None
     analysis_id: BoundedText
@@ -976,7 +996,17 @@ class AddConnectionRequest(StrictModel):
     master: EntityRef
     tolerance_m: ConnectionToleranceM | None = None
     adjust: StrictBool | None = None
-    surface_behavior: Literal["hard"] | None = None
+    # ConstraintContact.SurfaceBehavior enum values exposed in a lower-case
+    # wire form; the Addon maps them to native ``Hard``/``Linear``/``Tied``.
+    surface_behavior: Literal["hard", "linear", "tied"] | None = None
+    # Omitted means frictionless.  Keeping omission distinct from an explicit
+    # ``false`` allows the bridge to preserve the legacy tie/contact payload
+    # while still rejecting contact-only fields when they are supplied.
+    friction: StrictBool | None = None
+    friction_coefficient: ContactFrictionCoefficient | None = None
+    normal_stiffness_pa_per_m: ContactNormalStiffnessPaPerM | None = None
+    stick_stiffness_pa_per_m: ContactStickStiffnessPaPerM | None = None
+    adjust_m: ContactAdjustM | None = None
     sectors: CyclicSectors | None = None
     connected_sectors: ConnectedSectors | None = None
 
@@ -997,8 +1027,17 @@ class AddConnectionRequest(StrictModel):
                 raise ValueError("tolerance_m is required for tie connections")
             if self.adjust is None:
                 raise ValueError("adjust is required for tie connections")
-            if self.surface_behavior is not None:
-                raise ValueError("surface_behavior is not valid for tie connections")
+            if any(
+                value is not None
+                for value in (
+                    self.surface_behavior,
+                    self.friction_coefficient,
+                    self.normal_stiffness_pa_per_m,
+                    self.stick_stiffness_pa_per_m,
+                    self.adjust_m,
+                )
+            ) or self.friction is not None:
+                raise ValueError("contact fields are not valid for tie connections")
             if self.connection_type == "cyclic_symmetry":
                 if self.sectors is None:
                     raise ValueError("sectors is required for cyclic_symmetry connections")
@@ -1011,12 +1050,37 @@ class AddConnectionRequest(StrictModel):
             elif self.sectors is not None or self.connected_sectors is not None:
                 raise ValueError("cyclic symmetry fields are not valid for tie connections")
         else:
-            if self.surface_behavior != "hard":
-                raise ValueError("surface_behavior='hard' is required for contact connections")
+            if self.surface_behavior not in {"hard", "linear", "tied"}:
+                raise ValueError("surface_behavior is required for contact connections")
             if self.tolerance_m is not None or self.adjust is not None:
                 raise ValueError("tolerance_m and adjust are not valid for contact connections")
             if self.sectors is not None or self.connected_sectors is not None:
                 raise ValueError("cyclic symmetry fields are not valid for contact connections")
+            if self.surface_behavior in {"linear", "tied"}:
+                if self.normal_stiffness_pa_per_m is None:
+                    raise ValueError(
+                        "normal_stiffness_pa_per_m is required for linear/tied contact"
+                    )
+            elif self.normal_stiffness_pa_per_m is not None:
+                raise ValueError(
+                    "normal_stiffness_pa_per_m is only valid for linear/tied contact"
+                )
+            if self.friction is True:
+                if self.friction_coefficient is None:
+                    raise ValueError(
+                        "friction_coefficient is required when friction is true"
+                    )
+                if self.stick_stiffness_pa_per_m is None:
+                    raise ValueError(
+                        "stick_stiffness_pa_per_m is required when friction is true"
+                    )
+            elif (
+                self.friction_coefficient is not None
+                or self.stick_stiffness_pa_per_m is not None
+            ):
+                raise ValueError(
+                    "friction_coefficient and stick_stiffness_pa_per_m require friction=true"
+                )
         return self
 
 
@@ -1258,6 +1322,10 @@ __all__ = [
     "BucklingAccuracy",
     "BucklingFactors",
     "ConnectionToleranceM",
+    "ContactAdjustM",
+    "ContactNormalStiffnessPaPerM",
+    "ContactStickStiffnessPaPerM",
+    "ContactFrictionCoefficient",
     "CaptureRequest",
     "CaptureInput",
     "CaptureParams",

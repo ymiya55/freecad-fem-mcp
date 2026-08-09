@@ -90,6 +90,18 @@ def test_connection_contract_is_closed_and_face_only() -> None:
     assert tie.connection_type == "tie"
     contact = AddConnectionRequest(**base, connection_type="contact", surface_behavior="hard")
     assert contact.surface_behavior == "hard"
+    linear = AddConnectionRequest(
+        **base,
+        connection_type="contact",
+        surface_behavior="linear",
+        normal_stiffness_pa_per_m=1.0e9,
+        friction=True,
+        friction_coefficient=0.25,
+        stick_stiffness_pa_per_m=3.0e9,
+        adjust_m=0.004,
+    )
+    assert linear.normal_stiffness_pa_per_m == 1.0e9
+    assert linear.friction_coefficient == 0.25
     cyclic = AddConnectionRequest(
         **base,
         connection_type="cyclic_symmetry",
@@ -107,6 +119,38 @@ def test_connection_contract_is_closed_and_face_only() -> None:
         {**base, "connection_type": "contact"},
         {**base, "connection_type": "contact", "surface_behavior": "hard", "tolerance_m": 0.1},
         {**base, "connection_type": "contact", "surface_behavior": "hard", "adjust": False},
+        {
+            **base,
+            "connection_type": "contact",
+            "surface_behavior": "linear",
+        },
+        {
+            **base,
+            "connection_type": "contact",
+            "surface_behavior": "hard",
+            "normal_stiffness_pa_per_m": 1.0,
+        },
+        {
+            **base,
+            "connection_type": "contact",
+            "surface_behavior": "hard",
+            "friction": True,
+            "friction_coefficient": 0.2,
+        },
+        {
+            **base,
+            "connection_type": "contact",
+            "surface_behavior": "hard",
+            "friction_coefficient": 0.2,
+        },
+        {
+            **base,
+            "connection_type": "contact",
+            "surface_behavior": "hard",
+            "friction": True,
+            "friction_coefficient": 11.0,
+            "stick_stiffness_pa_per_m": 1.0,
+        },
         {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True,
          "slave": {"object_name": "Slave", "subelements": ["Edge1"]}},
         {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True,
@@ -114,6 +158,7 @@ def test_connection_contract_is_closed_and_face_only() -> None:
         {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True,
          "master": {"object_name": "Slave", "subelements": ["Face1"]}},
         {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True, "friction": 0.2},
+        {**base, "connection_type": "tie", "tolerance_m": 0.1, "adjust": True, "friction": False},
         {**base, "connection_type": "cyclic_symmetry", "tolerance_m": 0.1, "adjust": True},
         {
             **base,

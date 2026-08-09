@@ -220,6 +220,17 @@ native object/writerがないため実装しません。cyclic symmetryの任意
 限定した`ConstraintContact`を`add_connection`へ追加しました。同一面・stale Faceを拒否し、
 摩擦、linear/tied挙動、熱接触は単位付き契約と数値ベンチマーク完了までfeature gateします。
 
+**R5 native範囲完了:** static・non-thermal・Face-to-Faceのまま、native writerが持つHard／
+Linear／Tiedへ拡張しました。Linear/Tiedでは正の法線剛性をSI `Pa/m`で要求します。摩擦は明示的な
+bool、0より大きく10以下の無次元係数、正のstick剛性を同時に要求し、adjustは0〜1e6 mです。
+FreeCAD 1.1.3実writerで、1e9 Pa/m→1 MPa/mm、3e9 Pa/m→3 MPa/mm、0.004 m→4 mmの
+変換とHard／Linear／Tied出力を確認しました。異なるconnection種別のfieldは値がfalseでも存在で
+拒否し、未知native propertyを通しません。
+
+**R5将来計画:** thermal contact、shell contact、多面・自動ペアリング、任意native property、
+自動gap/penetration修正は公開しません。接触圧・摩擦力の定量ベンチマークとGUIでの面方向診断を
+追加できるまで、現在の明示Face対契約を維持します。
+
 ### R6: 荷重組合せと専門的な構造機能
 
 線形静解析について、名称付き荷重case、係数付き組合せ、最大・最小・絶対値envelopeを

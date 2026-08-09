@@ -1029,7 +1029,9 @@ class FreeCADOperations:
             raise OperationError("connection parameters must be an object")
         allowed_fields = {
             "references", "slave", "master", "name", "tolerance_m",
-            "adjust", "surface_behavior", "sectors", "connected_sectors",
+            "adjust", "surface_behavior", "friction", "friction_coefficient",
+            "normal_stiffness_pa_per_m", "stick_stiffness_pa_per_m", "adjust_m",
+            "sectors", "connected_sectors",
         }
         unsupported = set(params) - allowed_fields
         if unsupported:
@@ -1054,6 +1056,16 @@ class FreeCADOperations:
         name = _safe_name(params.get("name"), "Constraint" + kind.title())
 
         if kind in {"tie", "cyclic_symmetry"}:
+            if "friction" in params or any(
+                key in params
+                for key in (
+                    "friction_coefficient",
+                    "normal_stiffness_pa_per_m",
+                    "stick_stiffness_pa_per_m",
+                    "adjust_m",
+                )
+            ):
+                raise OperationError("contact fields are unsupported for tie")
             if "tolerance_m" not in params or params["tolerance_m"] is None:
                 raise OperationError("tolerance_m is required for tie")
             if "adjust" not in params or params["adjust"] is None:
@@ -1085,13 +1097,60 @@ class FreeCADOperations:
             elif any(key in params for key in ("sectors", "connected_sectors")):
                 raise OperationError("cyclic symmetry fields are unsupported for tie")
         else:
-            if params.get("surface_behavior") != "hard":
+            surface_behavior = params.get("surface_behavior")
+            if surface_behavior not in {"hard", "linear", "tied"}:
                 raise OperationError("surface_behavior is unsupported")
             if any(
                 key in params
                 for key in ("tolerance_m", "tolerance", "adjust", "sectors", "connected_sectors")
             ):
                 raise OperationError("tie fields are unsupported for contact")
+            friction = params.get("friction", False)
+            if not isinstance(friction, bool):
+                raise OperationError("friction must be boolean")
+            normal_stiffness = params.get("normal_stiffness_pa_per_m")
+            if surface_behavior in {"linear", "tied"}:
+                if normal_stiffness is None:
+                    raise OperationError(
+                        "normal_stiffness_pa_per_m is required for linear/tied contact"
+                    )
+                normal_stiffness = self._strict_analysis_number(
+                    normal_stiffness, "normal_stiffness_pa_per_m", 0.0, 1e15
+                )
+                if normal_stiffness <= 0.0:
+                    raise OperationError("normal_stiffness_pa_per_m must be positive")
+            elif normal_stiffness is not None:
+                raise OperationError(
+                    "normal_stiffness_pa_per_m is only valid for linear/tied contact"
+                )
+            friction_coefficient = params.get("friction_coefficient")
+            stick_stiffness = params.get("stick_stiffness_pa_per_m")
+            if friction:
+                if friction_coefficient is None:
+                    raise OperationError(
+                        "friction_coefficient is required when friction is true"
+                    )
+                if stick_stiffness is None:
+                    raise OperationError(
+                        "stick_stiffness_pa_per_m is required when friction is true"
+                    )
+                friction_coefficient = self._strict_analysis_number(
+                    friction_coefficient, "friction_coefficient", 0.0, 10.0
+                )
+                if friction_coefficient <= 0.0:
+                    raise OperationError("friction_coefficient must be positive")
+                stick_stiffness = self._strict_analysis_number(
+                    stick_stiffness, "stick_stiffness_pa_per_m", 0.0, 1e15
+                )
+                if stick_stiffness <= 0.0:
+                    raise OperationError("stick_stiffness_pa_per_m must be positive")
+            elif friction_coefficient is not None or stick_stiffness is not None:
+                raise OperationError(
+                    "friction_coefficient and stick_stiffness_pa_per_m require friction=true"
+                )
+            adjust_m = params.get("adjust_m")
+            if adjust_m is not None:
+                adjust_m = self._strict_analysis_number(adjust_m, "adjust_m", 0.0, 1e6)
             helper = "makeConstraintContact"
 
         with self._transaction(doc, "Add {} connection".format(kind)):
@@ -1105,8 +1164,34 @@ class FreeCADOperations:
                     self._set_connection_property(obj, "Sectors", sectors)
                     self._set_connection_property(obj, "ConnectedSectors", connected_sectors)
             else:
-                self._set_connection_property(obj, "SurfaceBehavior", "Hard")
-                self._set_connection_property(obj, "Friction", False)
+                native_behavior = {
+                    "hard": "Hard",
+                    "linear": "Linear",
+                    "tied": "Tied",
+                }[surface_behavior]
+                self._set_connection_property(obj, "SurfaceBehavior", native_behavior)
+                self._set_connection_property(obj, "Friction", friction)
+                if surface_behavior in {"linear", "tied"}:
+                    self._set_connection_property(
+                        obj,
+                        "Slope",
+                        self._unit_value(normal_stiffness, "Pa/m", "normal_stiffness_pa_per_m"),
+                    )
+                if friction:
+                    self._set_connection_property(
+                        obj, "FrictionCoefficient", friction_coefficient
+                    )
+                    self._set_connection_property(
+                        obj,
+                        "StickSlope",
+                        self._unit_value(
+                            stick_stiffness, "Pa/m", "stick_stiffness_pa_per_m"
+                        ),
+                    )
+                if adjust_m is not None:
+                    self._set_connection_property(
+                        obj, "Adjust", self._unit_value(adjust_m, "m", "adjust_m")
+                    )
                 self._set_connection_property(obj, "EnableThermalContact", False)
             self._add_to_analysis(analysis_obj, obj)
         return {"name": self._object_id(obj), "kind": kind}

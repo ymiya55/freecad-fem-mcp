@@ -52,6 +52,10 @@ from .models import (
     CreateAnalysisRequest,
     CreateMeshRequest,
     ConnectionToleranceM,
+    ContactAdjustM,
+    ContactFrictionCoefficient,
+    ContactNormalStiffnessPaPerM,
+    ContactStickStiffnessPaPerM,
     EntityRef,
     EigenmodesCount,
     FiniteFloat,
@@ -655,13 +659,16 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
     @app.tool(
         name="add_connection",
         description=(
-            "Add a bounded tie, cyclic-symmetry tie, or hard contact connection between exactly one "
+            "Add a bounded tie, cyclic-symmetry tie, or native CalculiX contact connection between exactly one "
             "slave FaceN and one master FaceN. Tie connections require finite "
             "tolerance_m (0..1e6 m) and adjust; cyclic_symmetry additionally "
-            "requires sectors>=2 and 1<=connected_sectors<sectors. Contact "
-            "connections require surface_behavior='hard'. Friction, slope, "
-            "thermal, arbitrary native properties, and custom axis placements "
-            "are not supported."
+            "requires sectors>=2 and 1<=connected_sectors<sectors. Contact supports "
+            "surface_behavior='hard'|'linear'|'tied'; linear/tied require positive "
+            "normal_stiffness_pa_per_m (SI Pa/m). Set friction=true to provide a "
+            "dimensionless friction_coefficient and positive stick_stiffness_pa_per_m "
+            "(SI Pa/m). adjust_m is an optional SI metre clearance. Thermal, shell, "
+            "multi-face, autopair, arbitrary native properties, and custom axis "
+            "placements are not supported."
         ),
         annotations=ann(readonly=False, destructive=False),
     )
@@ -673,7 +680,12 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         document_id: BoundedText | None = None,
         tolerance_m: ConnectionToleranceM | None = None,
         adjust: StrictBool | None = None,
-        surface_behavior: Literal["hard"] | None = None,
+        surface_behavior: Literal["hard", "linear", "tied"] | None = None,
+        friction: StrictBool | None = None,
+        friction_coefficient: ContactFrictionCoefficient | None = None,
+        normal_stiffness_pa_per_m: ContactNormalStiffnessPaPerM | None = None,
+        stick_stiffness_pa_per_m: ContactStickStiffnessPaPerM | None = None,
+        adjust_m: ContactAdjustM | None = None,
         sectors: Annotated[StrictInt, Field(ge=2, le=1_000_000)] | None = None,
         connected_sectors: Annotated[StrictInt, Field(ge=1, le=1_000_000)] | None = None,
     ) -> Any:
@@ -686,6 +698,11 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             tolerance_m=tolerance_m,
             adjust=adjust,
             surface_behavior=surface_behavior,
+            friction=friction,
+            friction_coefficient=friction_coefficient,
+            normal_stiffness_pa_per_m=normal_stiffness_pa_per_m,
+            stick_stiffness_pa_per_m=stick_stiffness_pa_per_m,
+            adjust_m=adjust_m,
             sectors=sectors,
             connected_sectors=connected_sectors,
         )

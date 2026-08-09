@@ -49,7 +49,8 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
         {
             "action", "document_id", "analysis_id", "connection_type",
             "slave", "master", "tolerance_m", "adjust", "surface_behavior",
-            "sectors", "connected_sectors",
+            "friction", "friction_coefficient", "normal_stiffness_pa_per_m",
+            "stick_stiffness_pa_per_m", "adjust_m", "sectors", "connected_sectors",
         },
         {"action", "analysis_id", "connection_type", "slave", "master"},
     ),
@@ -492,6 +493,16 @@ class FEMService:
         if connection_type in {"tie", "cyclic_symmetry"}:
             if "surface_behavior" in params:
                 raise ServiceError("surface_behavior is unsupported for tie")
+            if "friction" in params or any(
+                field in params
+                for field in (
+                    "friction_coefficient",
+                    "normal_stiffness_pa_per_m",
+                    "stick_stiffness_pa_per_m",
+                    "adjust_m",
+                )
+            ):
+                raise ServiceError("contact fields are unsupported for tie")
             if "tolerance_m" not in params or params["tolerance_m"] is None:
                 raise ServiceError("tolerance_m is required for tie")
             tolerance = cls._finite_value(
@@ -513,17 +524,71 @@ class FEMService:
                 raise ServiceError("cyclic symmetry fields are unsupported for tie")
             return
 
-        # Initial contact exposure is deliberately hard, frictionless, and
-        # non-thermal.  Keeping this discriminator closed avoids forwarding
-        # unsupported native contact controls through the bridge.
-        if params.get("surface_behavior") != "hard":
-            raise ServiceError("surface_behavior must be hard for contact")
+        # Native ConstraintContact controls are deliberately limited to the
+        # CalculiX writer's solid face-to-face fields.  Thermal conductance,
+        # shell/multi-face/autopair and arbitrary native properties remain out
+        # of this bridge contract.
+        surface_behavior = params.get("surface_behavior")
+        if surface_behavior not in {"hard", "linear", "tied"}:
+            raise ServiceError("surface_behavior is unsupported for contact")
         for forbidden in ("tolerance_m", "adjust"):
             if forbidden in params:
                 raise ServiceError("{} is unsupported for contact".format(forbidden))
         for forbidden in ("sectors", "connected_sectors"):
             if forbidden in params:
                 raise ServiceError("{} is unsupported for contact".format(forbidden))
+        friction = params.get("friction", False)
+        cls._strict_bool(friction, "friction")
+        if surface_behavior in {"linear", "tied"}:
+            if "normal_stiffness_pa_per_m" not in params:
+                raise ServiceError(
+                    "normal_stiffness_pa_per_m is required for linear/tied contact"
+                )
+            normal_stiffness = cls._finite_value(
+                params["normal_stiffness_pa_per_m"],
+                "normal_stiffness_pa_per_m",
+                strict_numeric=True,
+            )
+            if not 0.0 < normal_stiffness <= 1e15:
+                raise ServiceError("normal_stiffness_pa_per_m is outside the allowed range")
+        elif "normal_stiffness_pa_per_m" in params:
+            raise ServiceError(
+                "normal_stiffness_pa_per_m is only valid for linear/tied contact"
+            )
+        if friction:
+            if "friction_coefficient" not in params:
+                raise ServiceError("friction_coefficient is required when friction is true")
+            if "stick_stiffness_pa_per_m" not in params:
+                raise ServiceError(
+                    "stick_stiffness_pa_per_m is required when friction is true"
+                )
+            coefficient = cls._finite_value(
+                params["friction_coefficient"],
+                "friction_coefficient",
+                strict_numeric=True,
+            )
+            if not 0.0 < coefficient <= 10.0:
+                raise ServiceError("friction_coefficient is outside the allowed range")
+            stick_stiffness = cls._finite_value(
+                params["stick_stiffness_pa_per_m"],
+                "stick_stiffness_pa_per_m",
+                strict_numeric=True,
+            )
+            if not 0.0 < stick_stiffness <= 1e15:
+                raise ServiceError(
+                    "stick_stiffness_pa_per_m is outside the allowed range"
+                )
+        elif any(
+            field in params
+            for field in ("friction_coefficient", "stick_stiffness_pa_per_m")
+        ):
+            raise ServiceError(
+                "friction_coefficient and stick_stiffness_pa_per_m require friction=true"
+            )
+        if "adjust_m" in params:
+            adjust_m = cls._finite_value(params["adjust_m"], "adjust_m", strict_numeric=True)
+            if not 0.0 <= adjust_m <= 1e6:
+                raise ServiceError("adjust_m is outside the allowed range")
 
     @classmethod
     def _connection_data(cls, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -551,7 +616,19 @@ class FEMService:
                 data["sectors"] = params["sectors"]
                 data["connected_sectors"] = params["connected_sectors"]
         else:
-            data["surface_behavior"] = "hard"
+            data["surface_behavior"] = params["surface_behavior"]
+            if "friction" in params:
+                data["friction"] = params["friction"]
+            for field in (
+                "friction_coefficient",
+                "normal_stiffness_pa_per_m",
+                "stick_stiffness_pa_per_m",
+                "adjust_m",
+            ):
+                if field in params and params[field] is not None:
+                    data[field] = cls._finite_value(
+                        params[field], field, strict_numeric=True
+                    )
         return data
 
     def _validate_constraint_contract(self, params: Mapping[str, Any]) -> None:

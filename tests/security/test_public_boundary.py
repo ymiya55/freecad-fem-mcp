@@ -487,6 +487,18 @@ def _public_contact_params() -> dict[str, object]:
     }
 
 
+def _public_linear_contact_params() -> dict[str, object]:
+    return {
+        **_public_contact_params(),
+        "surface_behavior": "linear",
+        "normal_stiffness_pa_per_m": 1.0e9,
+        "friction": True,
+        "friction_coefficient": 0.25,
+        "stick_stiffness_pa_per_m": 3.0e9,
+        "adjust_m": 0.004,
+    }
+
+
 def test_public_connection_accepts_closed_tie_and_contact_variants() -> None:
     tie = AddConnectionRequest(**_public_tie_params())
     assert tie.tolerance_m == 0.0
@@ -494,6 +506,10 @@ def test_public_connection_accepts_closed_tie_and_contact_variants() -> None:
 
     contact = AddConnectionRequest(**_public_contact_params())
     assert contact.surface_behavior == "hard"
+
+    linear = AddConnectionRequest(**_public_linear_contact_params())
+    assert linear.normal_stiffness_pa_per_m == 1.0e9
+    assert linear.friction is True
 
     endpoint_tie = AddConnectionRequest(
         **{**_public_tie_params(), "tolerance_m": 1e6, "adjust": True}
@@ -528,6 +544,10 @@ def test_public_connection_accepts_closed_tie_and_contact_variants() -> None:
         {
             **_public_contact_params(),
             "surface_behavior": "linear",
+        },
+        {
+            **_public_contact_params(),
+            "surface_behavior": "tied",
         },
         {
             **_public_contact_params(),
@@ -591,6 +611,28 @@ def test_public_connection_rejects_variant_confusion_and_extra_fields(
 )
 def test_public_tie_rejects_bad_tolerance_and_adjust(field: str, value: object) -> None:
     params = _public_tie_params()
+    params[field] = value
+    with pytest.raises(ValidationError):
+        AddConnectionRequest(**params)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("adjust_m", -0.1),
+        ("adjust_m", 1e6 + 0.1),
+        ("adjust_m", True),
+        ("adjust_m", math.nan),
+        ("normal_stiffness_pa_per_m", 0.0),
+        ("normal_stiffness_pa_per_m", 1e15 + 1.0),
+        ("friction_coefficient", 0.0),
+        ("friction_coefficient", 10.1),
+        ("stick_stiffness_pa_per_m", 0.0),
+        ("stick_stiffness_pa_per_m", 1e15 + 1.0),
+    ],
+)
+def test_public_contact_rejects_bad_native_ranges(field: str, value: object) -> None:
+    params = _public_linear_contact_params()
     params[field] = value
     with pytest.raises(ValidationError):
         AddConnectionRequest(**params)
@@ -1336,9 +1378,24 @@ def _addon_contact_params() -> dict[str, object]:
     }
 
 
+def _addon_linear_contact_params() -> dict[str, object]:
+    return {
+        **_addon_contact_params(),
+        "surface_behavior": "linear",
+        "normal_stiffness_pa_per_m": 1.0e9,
+        "friction": True,
+        "friction_coefficient": 0.25,
+        "stick_stiffness_pa_per_m": 3.0e9,
+        "adjust_m": 0.004,
+    }
+
+
 def test_addon_accepts_tie_and_contact_and_forwards_closed_payload() -> None:
     service, operations = _service()
-    for request_id, params in enumerate((_addon_tie_params(), _addon_contact_params()), start=650):
+    for request_id, params in enumerate(
+        (_addon_tie_params(), _addon_contact_params(), _addon_linear_contact_params()),
+        start=650,
+    ):
         before = len(operations.connection_calls)
         result = service(Request(request_id, "connection", params))
         assert result["connection_id"] == "Connection"
@@ -1358,7 +1415,16 @@ def test_addon_accepts_tie_and_contact_and_forwards_closed_payload() -> None:
         if params["connection_type"] == "tie":
             expected.update({"tolerance_m": 0.0, "adjust": False})
         else:
-            expected["surface_behavior"] = "hard"
+            expected["surface_behavior"] = params["surface_behavior"]
+            for field in (
+                "friction",
+                "friction_coefficient",
+                "normal_stiffness_pa_per_m",
+                "stick_stiffness_pa_per_m",
+                "adjust_m",
+            ):
+                if field in params:
+                    expected[field] = params[field]
         assert args[2] == expected
 
 
@@ -1377,6 +1443,10 @@ def test_addon_accepts_tie_and_contact_and_forwards_closed_payload() -> None:
         {
             **_addon_tie_params(),
             "surface_behavior": "hard",
+        },
+        {
+            **_addon_tie_params(),
+            "friction": False,
         },
         {
             **_addon_contact_params(),
