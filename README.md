@@ -99,6 +99,7 @@ FreeCAD 1.1.xではAddonは`%APPDATA%\FreeCAD\v1-1\Mod\FreeCADFEMMCP`へ導入�
 | 結果 | `get_results`, `show_result` |
 
 公開ツールごとに入力スキーマと副作用annotationを固定しています。汎用action、任意Python、任意シェル、任意INP、任意ファイル読取ツールはありません。
+`get_status`の`capabilities.future_gates`には、FreeCAD 1.1.3でnative object/writerが揃わず公開していないR6機能を列挙します。これは利用可能機能ではなく、明示的な非対応・将来計画です。
 
 ## 基本ワークフロー
 

@@ -181,4 +181,9 @@ frictionless、symmetry、antisymmetry supportの代用にはしません。表�
 
 長時間動作するMCPクライアントは、FreeCAD再起動後の最初の接続失敗時に新しい接続レコードを1回だけ再読込します。複数のFreeCAD GUIを同時起動すると最後に起動したbridgeが接続レコードを所有するため、MCP操作対象のFreeCADは1プロセスにすることを推奨します。
 
+`get_status.capabilities.future_gates`は、現在のFreeCAD 1.1.3 native経路では利用できない機能です。
+LoadCase、複数Step、Combination、Envelope、bolt pretension、機械的初期応力／ひずみ、集中質量／
+回転慣性、damper、connector releaseを含みます。これらの名前を他のツールへ入力してもunknown field
+として拒否され、任意INPや旧solverへfallbackしません。
+
 Codexの設定仕様は[Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp.md)、Inspectorの操作は[MCP Inspector documentation](https://modelcontextprotocol.io/docs/tools/inspector)を参照してください。

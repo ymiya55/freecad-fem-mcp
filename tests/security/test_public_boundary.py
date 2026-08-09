@@ -2633,6 +2633,31 @@ def test_addon_status_advertises_all_analysis_types_and_route_parity() -> None:
     assert {pair for pair, _base in _ROUTE_CASES} == set(PUBLIC_TOOL_ACTIONS.values())
 
 
+def test_addon_status_exposes_exact_bounded_r6_future_gates() -> None:
+    service, _operations = _service()
+    expected = [
+        "load_case",
+        "multi_step",
+        "combination",
+        "envelope",
+        "bolt_pretension",
+        "mechanical_initial_stress_strain",
+        "concentrated_mass_rotational_inertia",
+        "damper",
+        "connector_release",
+    ]
+    status = service(Request(91, "status", {"action": "get"}))
+    assert status["capabilities"]["future_gates"] == expected
+    assert len(status["capabilities"]["future_gates"]) == 9
+    for model in PUBLIC_REQUEST_MODELS.values():
+        assert not set(expected).intersection(model.model_fields)
+        assert not set(expected).intersection(model.model_json_schema().get("properties", {}))
+    # The status response must not expose a mutable module-level list.
+    status["capabilities"]["future_gates"].append("unexpected")
+    refreshed = service(Request(92, "status", {"action": "get"}))
+    assert refreshed["capabilities"]["future_gates"] == expected
+
+
 @pytest.mark.parametrize("escape_field", ("code", "inp", "property", "property_name", "native_property"))
 def test_addon_every_route_rejects_native_escape_fields(escape_field: str) -> None:
     """No route/action may pass code, INP, or native property data downstream."""
@@ -2644,6 +2669,31 @@ def test_addon_every_route_rejects_native_escape_fields(escape_field: str) -> No
         params[escape_field] = "__import__('os').system('whoami')"
         with pytest.raises(ServiceError, match="unknown fields"):
             service(Request(100, method, params))
+
+
+@pytest.mark.parametrize(
+    "future_field",
+    [
+        "load_case",
+        "multi_step",
+        "combination",
+        "envelope",
+        "bolt_pretension",
+        "mechanical_initial_stress_strain",
+        "concentrated_mass_rotational_inertia",
+        "damper",
+        "connector_release",
+    ],
+)
+def test_addon_r6_future_fields_are_unknown_on_every_route(future_field: str) -> None:
+    """R6 gates are status-only; no route accepts a future feature field."""
+
+    service, _operations = _service()
+    for (method, _action), base in _ROUTE_CASES:
+        params = dict(base)
+        params[future_field] = {"enabled": True}
+        with pytest.raises(ServiceError, match="unknown fields"):
+            service(Request(110, method, params))
 
 
 def test_addon_every_route_rejects_arbitrary_actions() -> None:

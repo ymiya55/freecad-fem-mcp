@@ -17,6 +17,23 @@ class ServiceError(RuntimeError):
     pass
 
 
+# R6 audit gates: these capabilities have no verified FreeCAD 1.1.3 native
+# document object *and* CalculiX writer pair.  Keep the machine-readable list
+# bounded and stable; listing a gate does not expose a route or an INP/legacy
+# fallback.
+_R6_FUTURE_GATES: tuple[str, ...] = (
+    "load_case",
+    "multi_step",
+    "combination",
+    "envelope",
+    "bolt_pretension",
+    "mechanical_initial_stress_strain",
+    "concentrated_mass_rotational_inertia",
+    "damper",
+    "connector_release",
+)
+
+
 # Public requests are modelled as one fixed action per bridge method.  Keep
 # this table next to the router so a direct Addon caller cannot smuggle an
 # unused ``code``, ``inp``, or FreeCAD property through a valid action.
@@ -718,6 +735,7 @@ class FEMService:
                     "connections": ["tie", "contact", "cyclic_symmetry"],
                     "mpc_types": ["plane_rotation"],
                     "result_kinds": ["displacement", "stress", "strain", "von_mises", "reaction"],
+                    "future_gates": list(_R6_FUTURE_GATES),
                 },
             }
 
