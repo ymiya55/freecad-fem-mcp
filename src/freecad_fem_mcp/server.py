@@ -42,6 +42,7 @@ from .models import (
     Amplitude,
     AnalysisFrequencyHz,
     AssignMaterialRequest,
+    AssignElementGeometryRequest,
     BoundedPath,
     BoundedText,
     BucklingAccuracy,
@@ -51,6 +52,10 @@ from .models import (
     CentrifugalFrequencyHz,
     CreateAnalysisRequest,
     CreateMeshRequest,
+    ElementAreaM2,
+    ElementDimensionM,
+    ElementOffset,
+    ElementRotationRad,
     ConnectionToleranceM,
     ContactAdjustM,
     ContactFrictionCoefficient,
@@ -93,6 +98,7 @@ TOOL_NAMES = (
     "save_document",
     "create_analysis",
     "assign_material",
+    "assign_element_geometry",
     "add_constraint",
     "add_load",
     "add_remote_load",
@@ -119,6 +125,7 @@ PUBLIC_TOOL_ACTIONS = {
     "save_document": ("save", "save"),
     "create_analysis": ("analysis", "create"),
     "assign_material": ("material", "assign"),
+    "assign_element_geometry": ("element_geometry", "assign"),
     "add_constraint": ("constraint", "add"),
     "add_load": ("load", "add"),
     "add_remote_load": ("remote_load", "add"),
@@ -429,6 +436,88 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         return await invoke("material", "assign", request)
 
     @app.tool(
+        name="assign_element_geometry",
+        description=(
+            "Assign closed native shell, beam-section, or beam-rotation geometry. "
+            "Targets must be explicit FaceN references for shell geometry or "
+            "EdgeN references for beam geometry; whole-object and empty targets "
+            "are not accepted. Beam dimensions are SI metres."
+        ),
+        annotations=ann(readonly=False, destructive=False, idempotent=True),
+    )
+    async def assign_element_geometry(
+        analysis_id: BoundedText,
+        kind: Literal["shell", "beam_section", "beam_rotation"],
+        targets: Annotated[
+            list[EntityRef],
+            Field(
+                min_length=1,
+                max_length=128,
+                description=(
+                    "Explicit EntityRef targets. Shell uses FaceN subelements; "
+                    "beam section/rotation uses EdgeN subelements."
+                ),
+            ),
+        ],
+        document_id: BoundedText | None = None,
+        thickness_m: ElementDimensionM | None = None,
+        offset: ElementOffset | None = None,
+        section_type: Literal[
+            "rectangular", "circular", "pipe", "elliptical", "box", "truss"
+        ]
+        | None = None,
+        rect_width_m: ElementDimensionM | None = None,
+        rect_height_m: ElementDimensionM | None = None,
+        circ_diameter_m: ElementDimensionM | None = None,
+        pipe_diameter_m: ElementDimensionM | None = None,
+        pipe_thickness_m: ElementDimensionM | None = None,
+        axis1_length_m: ElementDimensionM | None = None,
+        axis2_length_m: ElementDimensionM | None = None,
+        box_width_m: ElementDimensionM | None = None,
+        box_height_m: ElementDimensionM | None = None,
+        box_t1_m: ElementDimensionM | None = None,
+        box_t2_m: ElementDimensionM | None = None,
+        box_t3_m: ElementDimensionM | None = None,
+        box_t4_m: ElementDimensionM | None = None,
+        truss_area_m2: ElementAreaM2 | None = None,
+        rotation_rad: ElementRotationRad | None = None,
+    ) -> Any:
+        # Preserve omitted variant fields when constructing the strict flat
+        # request model.  This lets its discriminator validator distinguish a
+        # genuinely supplied unrelated dimension from an omitted optional arg.
+        payload: dict[str, Any] = {
+            "analysis_id": analysis_id,
+            "kind": kind,
+            "targets": targets,
+        }
+        if document_id is not None:
+            payload["document_id"] = document_id
+        for name, value in (
+            ("thickness_m", thickness_m),
+            ("offset", offset),
+            ("section_type", section_type),
+            ("rect_width_m", rect_width_m),
+            ("rect_height_m", rect_height_m),
+            ("circ_diameter_m", circ_diameter_m),
+            ("pipe_diameter_m", pipe_diameter_m),
+            ("pipe_thickness_m", pipe_thickness_m),
+            ("axis1_length_m", axis1_length_m),
+            ("axis2_length_m", axis2_length_m),
+            ("box_width_m", box_width_m),
+            ("box_height_m", box_height_m),
+            ("box_t1_m", box_t1_m),
+            ("box_t2_m", box_t2_m),
+            ("box_t3_m", box_t3_m),
+            ("box_t4_m", box_t4_m),
+            ("truss_area_m2", truss_area_m2),
+            ("rotation_rad", rotation_rad),
+        ):
+            if value is not None:
+                payload[name] = value
+        request = AssignElementGeometryRequest(**payload)
+        return await invoke("element_geometry", "assign", request)
+
+    @app.tool(
         name="add_constraint",
         description=(
             "Add a bounded analysis constraint. Use targets with exact FreeCAD "
@@ -710,7 +799,10 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
 
     @app.tool(
         name="create_mesh",
-        description="Create a Gmsh analysis mesh.",
+        description=(
+            "Create a Gmsh analysis mesh. element_dimension selects the closed "
+            "1d, 2d, or 3d native element path and defaults to 3d."
+        ),
         annotations=ann(readonly=False, destructive=False),
     )
     async def create_mesh(
@@ -718,6 +810,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         document_id: BoundedText | None = None,
         element_size_mm: PositiveFiniteFloat | None = None,
         second_order: StrictBool = False,
+        element_dimension: Literal["1d", "2d", "3d"] = "3d",
         shape_id: BoundedText | None = None,
     ) -> Any:
         request = CreateMeshRequest(
@@ -725,6 +818,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             document_id=document_id,
             element_size_mm=element_size_mm,
             second_order=second_order,
+            element_dimension=element_dimension,
             shape_id=shape_id,
         )
         return await invoke("mesh", "create", request)

@@ -26,6 +26,7 @@ from freecad_fem_mcp.models import (  # noqa: E402
     AddLoadRequest,
     AddRemoteLoadRequest,
     AddRemoteDisplacementRequest,
+    AssignElementGeometryRequest,
     CreateAnalysisRequest,
     CreateMeshRequest,
     GetResultsRequest,
@@ -107,6 +108,82 @@ def test_typed_load_and_boundary_requests_reject_extra_or_nonfinite_values() -> 
             boundary_type="fixed",
             code="__import__('os').system('whoami')",
         )
+
+
+def test_public_element_geometry_is_closed_discriminated_and_explicit() -> None:
+    face = {"object_name": "Plate", "subelements": ["Face1"]}
+    edge = {"object_name": "Beam", "subelements": ["Edge1"]}
+    shell = AssignElementGeometryRequest(
+        analysis_id="A",
+        kind="shell",
+        targets=[face],
+        thickness_m=0.001,
+        offset=-1.0,
+    )
+    assert shell.offset == -1.0
+    beam = AssignElementGeometryRequest(
+        analysis_id="A",
+        kind="beam_section",
+        section_type="elliptical",
+        targets=[edge],
+        axis1_length_m=0.03,
+        axis2_length_m=0.02,
+    )
+    assert beam.axis1_length_m == 0.03
+    rotation = AssignElementGeometryRequest(
+        analysis_id="A",
+        kind="beam_rotation",
+        targets=[edge],
+        rotation_rad=0.0,
+    )
+    assert rotation.rotation_rad == 0.0
+
+    bad = (
+        {"kind": "shell", "targets": [], "thickness_m": 0.001},
+        {
+            "kind": "shell",
+            "targets": [{"object_name": "Plate", "subelements": []}],
+            "thickness_m": 0.001,
+        },
+        {"kind": "shell", "targets": [edge], "thickness_m": 0.001},
+        {"kind": "shell", "targets": [face], "thickness_m": True},
+        {"kind": "shell", "targets": [face], "thickness_m": math.nan},
+        {"kind": "shell", "targets": [face], "thickness_m": math.inf},
+        {"kind": "shell", "targets": [face], "thickness_m": 0.001, "offset": 1.1},
+        {
+            "kind": "beam_section",
+            "section_type": "circular",
+            "targets": [edge],
+            "circ_diameter_m": 0.01,
+            "rect_width_m": 0.01,
+        },
+        {
+            "kind": "beam_section",
+            "section_type": "pipe",
+            "targets": [edge],
+            "pipe_diameter_m": 0.01,
+            "pipe_thickness_m": 0.005,
+        },
+        {"kind": "beam_rotation", "targets": [edge], "rotation_rad": True},
+        {"kind": "beam_rotation", "targets": [edge], "rotation_rad": math.inf},
+        {
+            "kind": "beam_rotation",
+            "targets": [edge],
+            "rotation_rad": 0.0,
+            "native_property": "Rotation",
+        },
+    )
+    for params in bad:
+        with pytest.raises(ValidationError):
+            AssignElementGeometryRequest(analysis_id="A", **params)
+
+    model_schema = AssignElementGeometryRequest.model_json_schema()
+    assert model_schema["additionalProperties"] is False
+    assert model_schema["properties"]["kind"]["enum"] == [
+        "shell",
+        "beam_section",
+        "beam_rotation",
+    ]
 
 
 # Amplitudes are deliberately represented as plain mappings at the public
@@ -1129,6 +1206,7 @@ class _RecordingOperations:
             tuple[tuple[object, ...], dict[str, object]]
         ] = []
         self.centrifugal_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        self.geometry_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def add_constraint(self, analysis_id: str, kind: str, data: dict[str, object]) -> dict[str, str]:
         self.calls.append((analysis_id, kind, data))
@@ -1159,6 +1237,10 @@ class _RecordingOperations:
     def add_centrifugal_load(self, *args: object, **kwargs: object) -> dict[str, str]:
         self.centrifugal_calls.append((args, kwargs))
         return {"name": "Centrifugal"}
+
+    def assign_element_geometry(self, *args: object, **kwargs: object) -> dict[str, object]:
+        self.geometry_calls.append((args, kwargs))
+        return {"name": "ElementGeometry", "kind": args[1] if len(args) > 1 else None}
 
 
 class _EmptySelection:
@@ -2611,6 +2693,16 @@ _ROUTE_CASES: tuple[tuple[tuple[str, str], dict[str, object]], ...] = (
         },
     ),
     (("mesh", "create"), {"action": "create", "analysis_id": "Analysis"}),
+    (
+        ("element_geometry", "assign"),
+        {
+            "action": "assign",
+            "analysis_id": "Analysis",
+            "kind": "shell",
+            "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
+            "thickness_m": 0.001,
+        },
+    ),
     (("validate", "validate"), {"action": "validate", "analysis_id": "Analysis"}),
     (("jobs", "start"), {"action": "start", "analysis_id": "Analysis"}),
     (("jobs", "get"), {"action": "get", "job_id": "Job"}),
@@ -2629,7 +2721,7 @@ def test_addon_status_advertises_all_analysis_types_and_route_parity() -> None:
         "frequency",
         "buckling",
     }
-    assert len(_ROUTE_CASES) == 23
+    assert len(_ROUTE_CASES) == 24
     assert {pair for pair, _base in _ROUTE_CASES} == set(PUBLIC_TOOL_ACTIONS.values())
 
 
@@ -2656,6 +2748,18 @@ def test_addon_status_exposes_exact_bounded_r6_future_gates() -> None:
     status["capabilities"]["future_gates"].append("unexpected")
     refreshed = service(Request(92, "status", {"action": "get"}))
     assert refreshed["capabilities"]["future_gates"] == expected
+
+
+def test_addon_status_exposes_bounded_native_element_geometry_capabilities() -> None:
+    service, _operations = _service()
+    capabilities = service(Request(93, "status", {"action": "get"}))["capabilities"]
+    assert capabilities["element_dimensions"] == ["1d", "2d", "3d"]
+    assert capabilities["element_geometry"]["shell"]["references"] == "Face"
+    assert capabilities["element_geometry"]["beam_section"]["references"] == "Edge"
+    assert capabilities["element_geometry"]["beam_rotation"]["references"] == "Edge"
+    capabilities["element_geometry"]["beam_section"]["section_types"].append("escape")
+    refreshed = service(Request(94, "status", {"action": "get"}))["capabilities"]
+    assert "escape" not in refreshed["element_geometry"]["beam_section"]["section_types"]
 
 
 @pytest.mark.parametrize("escape_field", ("code", "inp", "property", "property_name", "native_property"))

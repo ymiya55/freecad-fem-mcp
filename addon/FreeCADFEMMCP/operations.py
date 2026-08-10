@@ -1535,6 +1535,10 @@ class FreeCADOperations:
         doc = self._document()
         analysis_obj = self._find(doc, analysis)
         safe = _safe_name(name, "GmshMesh")
+        element_dimension = settings.get("element_dimension")
+        if element_dimension is not None:
+            if element_dimension not in {"1d", "2d", "3d"}:
+                raise OperationError("element_dimension must be 1d, 2d, or 3d")
         with self._transaction(doc, "Create Gmsh mesh"):
             obj = self._new_object(doc, "Fem::FemMeshGmsh", safe, "makeMeshGmsh")
             shape_name = settings.get("shape", settings.get("geometry"))
@@ -1558,8 +1562,296 @@ class FreeCADOperations:
                         else:
                             raise OperationError("ElementOrder must be 1st or 2nd")
                     setattr(obj, key, value)
+            if element_dimension is not None:
+                self._set_native_required(
+                    obj,
+                    "ElementDimension",
+                    {"1d": "1D", "2d": "2D", "3d": "3D"}[element_dimension],
+                )
             self._add_to_analysis(analysis_obj, obj)
         return {"name": self._object_id(obj), "type": getattr(obj, "TypeId", "Fem::FemMeshGmsh")}
+
+    @staticmethod
+    def _strict_element_number(
+        value: Any,
+        name: str,
+        *,
+        minimum: float = 0.0,
+        maximum: float = 1e6,
+        inclusive_minimum: bool = False,
+    ) -> float:
+        """Validate one bounded SI geometry scalar without coercing strings."""
+
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise OperationError("{} must be numeric".format(name))
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise OperationError("{} must be numeric".format(name)) from exc
+        lower_ok = number >= minimum if inclusive_minimum else number > minimum
+        if not math.isfinite(number) or not lower_ok or number > maximum:
+            raise OperationError("{} is outside the allowed range".format(name))
+        return number
+
+    @classmethod
+    def _element_references(
+        cls, references: list[tuple[Any, str]], shape_kind: str
+    ) -> list[tuple[Any, str]]:
+        """Require unique, explicit, live FaceN or EdgeN references."""
+
+        if not isinstance(references, list) or not references or len(references) > 128:
+            raise OperationError("element geometry requires a non-empty reference list")
+        seen: set[tuple[str, str]] = set()
+        prefix = shape_kind
+        for obj, subelement in references:
+            if not isinstance(subelement, str) or not subelement.startswith(prefix):
+                raise OperationError("element geometry references must use {}N".format(prefix))
+            suffix = subelement[len(prefix) :]
+            if (
+                not suffix
+                or not suffix.isascii()
+                or not suffix.isdigit()
+                or int(suffix) <= 0
+                or (len(suffix) > 1 and suffix.startswith("0"))
+            ):
+                raise OperationError("element geometry references must use {}N".format(prefix))
+            object_key = cls._object_id(obj)
+            key = (object_key, subelement)
+            if key in seen:
+                raise OperationError("element geometry references must be unique")
+            seen.add(key)
+        cls._validate_boundary_references(references)
+        return references
+
+    @staticmethod
+    def _element_geometry_members(analysis_obj: Any, kind: str) -> list[Any]:
+        return [
+            member
+            for member in list(getattr(analysis_obj, "Group", []) or [])
+            if FreeCADOperations.fem_type(member) == kind
+        ]
+
+    @classmethod
+    def _element_geometry_property(
+        cls, obj: Any, name: str, value: Any, *, type_id: str | None = None
+    ) -> None:
+        """Set a known native property and fail closed when it is absent."""
+
+        cls._native_property_name(obj, name)
+        if type_id is not None:
+            getter = getattr(obj, "getTypeIdOfProperty", None)
+            if callable(getter):
+                try:
+                    actual = getter(name)
+                except Exception as exc:
+                    raise OperationError("native geometry property is unavailable: {}".format(name)) from exc
+                if actual != type_id:
+                    raise OperationError("native geometry property has wrong type: {}".format(name))
+        try:
+            setattr(obj, name, value)
+        except Exception as exc:
+            raise OperationError("native geometry property cannot be set: {}".format(name)) from exc
+
+    def assign_element_geometry(
+        self,
+        analysis: str,
+        kind: str | Mapping[str, Any],
+        params: Mapping[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Assign one closed native shell, beam section, or beam rotation object."""
+
+        if isinstance(kind, Mapping):
+            data = dict(kind)
+            geometry_kind = data.pop("kind", None)
+        else:
+            geometry_kind = kind
+            data = dict(params or {})
+        if not isinstance(geometry_kind, str) or geometry_kind not in {
+            "shell", "beam_section", "beam_rotation"
+        }:
+            raise OperationError("unsupported element geometry kind")
+        if not isinstance(data, Mapping):
+            raise OperationError("element geometry parameters must be an object")
+        allowed_fields = {
+            "references", "name", "thickness_m", "offset", "section_type",
+            "rect_width_m", "rect_height_m", "circ_diameter_m", "pipe_diameter_m",
+            "pipe_thickness_m", "axis1_length_m", "axis2_length_m", "box_width_m",
+            "box_height_m", "box_t1_m", "box_t2_m", "box_t3_m", "box_t4_m",
+            "truss_area_m2", "rotation_rad",
+        }
+        unknown = set(data) - allowed_fields
+        if unknown:
+            raise OperationError(
+                "unsupported element geometry fields: {}".format(
+                    ", ".join(sorted(str(item) for item in unknown))
+                )
+            )
+        doc = self._document()
+        analysis_obj = self._find(doc, analysis)
+        raw_references = data.get("references")
+        references = self._references(doc, raw_references)
+        if geometry_kind == "shell":
+            reference_kind = "Face"
+            dimensions = {"thickness_m", "offset"}
+            if data.get("thickness_m") is None:
+                raise OperationError("thickness_m is required for shell geometry")
+            thickness = self._strict_element_number(data["thickness_m"], "thickness_m")
+            offset = data.get("offset", 0.0)
+            if offset is None:
+                raise OperationError("offset must be numeric")
+            offset = self._strict_element_number(
+                offset, "offset", minimum=-1.0, maximum=1.0, inclusive_minimum=True
+            )
+            native_factory = "makeElementGeometry2D"
+            native_type = "Fem::ElementGeometry2D"
+        elif geometry_kind == "beam_rotation":
+            reference_kind = "Edge"
+            dimensions = {"rotation_rad"}
+            if data.get("rotation_rad") is None:
+                raise OperationError("rotation_rad is required for beam rotation geometry")
+            rotation = self._strict_element_number(
+                data["rotation_rad"], "rotation_rad", minimum=-1e6, maximum=1e6, inclusive_minimum=True
+            )
+            native_factory = "makeElementRotation1D"
+            native_type = "Fem::ElementRotation1D"
+        else:
+            reference_kind = "Edge"
+            section_type = data.get("section_type")
+            if section_type not in {
+                "rectangular", "circular", "pipe", "elliptical", "box", "truss"
+            }:
+                raise OperationError("section_type is unsupported")
+            section_fields = {
+                "rectangular": {"rect_width_m", "rect_height_m"},
+                "circular": {"circ_diameter_m"},
+                "pipe": {"pipe_diameter_m", "pipe_thickness_m"},
+                "elliptical": {"axis1_length_m", "axis2_length_m"},
+                "box": {"box_width_m", "box_height_m", "box_t1_m", "box_t2_m", "box_t3_m", "box_t4_m"},
+                "truss": {"truss_area_m2"},
+            }[section_type]
+            dimensions = set(section_fields) | {"section_type"}
+            for field in section_fields:
+                if data.get(field) is None:
+                    raise OperationError("{} is required for {} beam section".format(field, section_type))
+            if section_type == "pipe":
+                diameter = self._strict_element_number(data["pipe_diameter_m"], "pipe_diameter_m")
+                thickness = self._strict_element_number(data["pipe_thickness_m"], "pipe_thickness_m")
+                if 2.0 * thickness >= diameter:
+                    raise OperationError("pipe thickness must be less than half the outer diameter")
+            elif section_type == "box":
+                width = self._strict_element_number(data["box_width_m"], "box_width_m")
+                height = self._strict_element_number(data["box_height_m"], "box_height_m")
+                t1 = self._strict_element_number(data["box_t1_m"], "box_t1_m")
+                t2 = self._strict_element_number(data["box_t2_m"], "box_t2_m")
+                t3 = self._strict_element_number(data["box_t3_m"], "box_t3_m")
+                t4 = self._strict_element_number(data["box_t4_m"], "box_t4_m")
+                if t1 + t3 >= height or t2 + t4 >= width:
+                    raise OperationError("box wall thicknesses must fit inside box dimensions")
+            else:
+                for field in section_fields:
+                    self._strict_element_number(data[field], field)
+            native_factory = "makeElementGeometry1D"
+            native_type = "Fem::ElementGeometry1D"
+
+        supplied_fields = set(data)
+        common_fields = {"references", "name"}
+        if geometry_kind == "beam_section":
+            common_fields.add("section_type")
+        invalid_fields = supplied_fields - dimensions - common_fields
+        if invalid_fields:
+            raise OperationError(
+                "fields are not valid for {} geometry: {}".format(
+                    geometry_kind, ", ".join(sorted(str(item) for item in invalid_fields))
+                )
+            )
+        references = self._element_references(references, reference_kind)
+        name_default = {
+            "shell": "ElementGeometry2D",
+            "beam_section": "ElementGeometry1D",
+            "beam_rotation": "ElementRotation1D",
+        }[geometry_kind]
+        safe_name = _safe_name(data.get("name"), name_default)
+        existing_shells = self._element_geometry_members(analysis_obj, "Fem::ElementGeometry2D")
+        existing_beams = self._element_geometry_members(analysis_obj, "Fem::ElementGeometry1D")
+        solver = self._analysis_solver(analysis_obj)
+        exclude_value = getattr(solver, "ExcludeBendingStiffness", None)
+        if geometry_kind == "shell":
+            if existing_beams:
+                raise OperationError("shell and beam geometries cannot share one analysis")
+            if exclude_value is True:
+                raise OperationError("shell geometry conflicts with truss bending exclusion")
+        elif geometry_kind == "beam_section":
+            if existing_shells:
+                raise OperationError("beam and shell geometries cannot share one analysis")
+            if section_type == "truss":
+                # ExcludeBendingStiffness is a solver-global switch.  A
+                # truss section may be repeated while that switch is already
+                # enabled, but it must never be mixed into a normal-beam
+                # analysis that has it disabled.
+                if existing_beams and exclude_value is not True:
+                    raise OperationError("truss and normal beam sections cannot be mixed")
+            elif exclude_value is True:
+                # With exclusion enabled CalculiX writes every beam section
+                # as a truss.  Do not silently turn a normal section into a
+                # truss by reusing that solver-global setting.
+                raise OperationError("normal beam sections conflict with truss bending exclusion")
+
+        with self._transaction(doc, "Assign native element geometry"):
+            factory = getattr(self.objects_fem, native_factory, None) if self.objects_fem is not None else None
+            if not callable(factory):
+                raise OperationError("native element geometry factory is unavailable: {}".format(native_factory))
+            try:
+                obj = factory(doc, name=safe_name)
+            except Exception as exc:
+                raise OperationError("native element geometry factory failed: {}".format(native_factory)) from exc
+            if self.fem_type(obj) != native_type:
+                raise OperationError("native element geometry type is unavailable: {}".format(native_type))
+            self._element_geometry_property(obj, "References", references, type_id="App::PropertyLinkSubListGlobal")
+            if geometry_kind == "shell":
+                self._element_geometry_property(obj, "Thickness", "{} m".format(thickness), type_id="App::PropertyLength")
+                self._element_geometry_property(obj, "Offset", offset, type_id="App::PropertyFloat")
+                self._set_native_required(solver, "ExcludeBendingStiffness", False)
+            elif geometry_kind == "beam_rotation":
+                self._element_geometry_property(obj, "Rotation", "{} rad".format(rotation), type_id="App::PropertyAngle")
+            else:
+                native_sections = {
+                    "rectangular": "Rectangular", "circular": "Circular", "pipe": "Pipe",
+                    "elliptical": "Elliptical", "box": "Box", "truss": "Rectangular",
+                }
+                self._element_geometry_property(obj, "SectionType", native_sections[section_type], type_id="App::PropertyEnumeration")
+                property_map = {
+                    "rect_width_m": "RectWidth", "rect_height_m": "RectHeight",
+                    "circ_diameter_m": "CircDiameter", "pipe_diameter_m": "PipeDiameter",
+                    "pipe_thickness_m": "PipeThickness", "axis1_length_m": "Axis1Length",
+                    "axis2_length_m": "Axis2Length", "box_width_m": "BoxWidth",
+                    "box_height_m": "BoxHeight", "box_t1_m": "BoxT1", "box_t2_m": "BoxT2",
+                    "box_t3_m": "BoxT3", "box_t4_m": "BoxT4",
+                }
+                for field, native_name in property_map.items():
+                    if field in section_fields:
+                        self._element_geometry_property(obj, native_name, "{} m".format(data[field]), type_id="App::PropertyLength")
+                if section_type == "pipe":
+                    self._element_geometry_property(
+                        solver,
+                        "BeamReducedIntegration",
+                        True,
+                        type_id="App::PropertyBool",
+                    )
+                if section_type == "truss":
+                    self._element_geometry_property(obj, "TrussArea", "{} m^2".format(data["truss_area_m2"]), type_id="App::PropertyArea")
+                    self._set_native_required(solver, "ExcludeBendingStiffness", True)
+            self._add_to_analysis(analysis_obj, obj)
+        return {
+            "name": self._object_id(obj),
+            "type": getattr(obj, "TypeId", native_type),
+            "kind": geometry_kind,
+            "section_type": section_type if geometry_kind == "beam_section" else None,
+            "references": len(references),
+        }
+
+    # Keep a descriptive alias for direct Addon callers while the service uses
+    # the route-aligned method name above.
+    set_element_geometry = assign_element_geometry
 
     def _create_solver(self, analysis: str, name: str = "CalculiX", working_directory: Optional[str] = None) -> Dict[str, Any]:
         doc = self._document()

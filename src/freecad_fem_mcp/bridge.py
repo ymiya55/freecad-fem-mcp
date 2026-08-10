@@ -41,6 +41,7 @@ BRIDGE_METHODS = frozenset(
         "boundary_condition",
         "connection",
         "mesh",
+        "element_geometry",
         "validate",
         "jobs",
         "results",

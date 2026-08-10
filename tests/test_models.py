@@ -12,8 +12,10 @@ from freecad_fem_mcp.models import (
     AddLoadRequest,
     AddRemoteDisplacementRequest,
     AddRemoteLoadRequest,
+    AssignElementGeometryRequest,
     EntityRef,
     CreateAnalysisRequest,
+    CreateMeshRequest,
     MaterialRequest,
     MeshRequest,
     StatusRequest,
@@ -598,3 +600,154 @@ def test_amplitude_is_gated_to_supported_loads_and_boundaries() -> None:
         amplitude=amplitude,
     )
     assert remote_displacement.amplitude is not None
+
+
+def test_element_geometry_contract_is_closed_and_kind_specific() -> None:
+    face_targets = [{"object_name": "Plate", "subelements": ["Face1", "Face2"]}]
+    edge_targets = [{"object_name": "Beam", "subelements": ["Edge1"]}]
+
+    shell = AssignElementGeometryRequest(
+        analysis_id="Analysis",
+        kind="shell",
+        targets=face_targets,
+        thickness_m=0.002,
+    )
+    assert shell.offset == 0.0
+    assert shell.thickness_m == 0.002
+
+    rectangular = AssignElementGeometryRequest(
+        analysis_id="Analysis",
+        kind="beam_section",
+        section_type="rectangular",
+        targets=edge_targets,
+        rect_width_m=0.02,
+        rect_height_m=0.04,
+    )
+    assert rectangular.rect_width_m == 0.02
+    pipe = AssignElementGeometryRequest(
+        analysis_id="Analysis",
+        kind="beam_section",
+        section_type="pipe",
+        targets=edge_targets,
+        pipe_diameter_m=0.04,
+        pipe_thickness_m=0.002,
+    )
+    assert pipe.pipe_thickness_m == 0.002
+    box = AssignElementGeometryRequest(
+        analysis_id="Analysis",
+        kind="beam_section",
+        section_type="box",
+        targets=edge_targets,
+        box_width_m=0.04,
+        box_height_m=0.06,
+        box_t1_m=0.003,
+        box_t2_m=0.003,
+        box_t3_m=0.003,
+        box_t4_m=0.003,
+    )
+    assert box.box_width_m == 0.04
+    truss = AssignElementGeometryRequest(
+        analysis_id="Analysis",
+        kind="beam_section",
+        section_type="truss",
+        targets=edge_targets,
+        truss_area_m2=1.0e-4,
+    )
+    assert truss.truss_area_m2 == 1.0e-4
+    rotation = AssignElementGeometryRequest(
+        analysis_id="Analysis",
+        kind="beam_rotation",
+        targets=edge_targets,
+        rotation_rad=math.pi / 2,
+    )
+    assert rotation.rotation_rad == math.pi / 2
+
+    invalid = (
+        {"kind": "shell", "targets": [], "thickness_m": 0.002},
+        {
+            "kind": "shell",
+            "targets": [{"object_name": "Plate", "subelements": ["Edge1"]}],
+            "thickness_m": 0.002,
+        },
+        {
+            "kind": "shell",
+            "targets": face_targets,
+            "thickness_m": 0.002,
+            "rect_width_m": 0.02,
+        },
+        {
+            "kind": "beam_section",
+            "section_type": "rectangular",
+            "targets": edge_targets,
+            "rect_width_m": 0.02,
+        },
+        {
+            "kind": "beam_section",
+            "section_type": "circular",
+            "targets": edge_targets,
+            "circ_diameter_m": 0.02,
+            "rect_width_m": 0.01,
+        },
+        {
+            "kind": "beam_section",
+            "section_type": "pipe",
+            "targets": edge_targets,
+            "pipe_diameter_m": 0.01,
+            "pipe_thickness_m": 0.005,
+        },
+        {
+            "kind": "beam_section",
+            "section_type": "box",
+            "targets": edge_targets,
+            "box_width_m": 0.01,
+            "box_height_m": 0.01,
+            "box_t1_m": 0.006,
+            "box_t2_m": 0.001,
+            "box_t3_m": 0.006,
+            "box_t4_m": 0.001,
+        },
+        {
+            "kind": "beam_rotation",
+            "targets": edge_targets,
+            "rotation_rad": 0.1,
+            "section_type": "circular",
+        },
+        {
+            "kind": "beam_rotation",
+            "targets": edge_targets,
+            "rotation_rad": math.nan,
+        },
+        {
+            "kind": "beam_rotation",
+            "targets": edge_targets,
+            "rotation_rad": True,
+        },
+        {
+            "kind": "beam_section",
+            "section_type": "rectangular",
+            "targets": edge_targets,
+            "rect_width_m": math.inf,
+            "rect_height_m": 0.02,
+        },
+        {
+            "kind": "beam_section",
+            "section_type": "rectangular",
+            "targets": edge_targets,
+            "rect_width_m": 0.02,
+            "rect_height_m": 0.02,
+            "code": "__import__('os').system('whoami')",
+        },
+    )
+    for params in invalid:
+        with pytest.raises(ValidationError):
+            AssignElementGeometryRequest(analysis_id="Analysis", **params)
+
+
+def test_create_mesh_element_dimension_is_closed_and_defaults_to_3d() -> None:
+    assert CreateMeshRequest(analysis_id="Analysis").element_dimension == "3d"
+    assert CreateMeshRequest(analysis_id="Analysis", element_dimension="1d").element_dimension == "1d"
+    assert CreateMeshRequest(analysis_id="Analysis", element_dimension="2d").element_dimension == "2d"
+    with pytest.raises(ValidationError):
+        CreateMeshRequest(analysis_id="Analysis", element_dimension="4d")
+    with pytest.raises(ValidationError):
+        CreateMeshRequest(analysis_id="Analysis", element_dimension=True)

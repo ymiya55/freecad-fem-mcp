@@ -27,6 +27,7 @@ def test_fixed_tool_surface_has_no_generic_escape_hatches() -> None:
         "save_document",
         "create_analysis",
         "assign_material",
+        "assign_element_geometry",
         "add_constraint",
         "add_load",
         "add_remote_load",
@@ -152,6 +153,103 @@ def test_create_analysis_variants_keep_one_tool_and_forward_controls() -> None:
 
     with pytest.raises(ValidationError):
         asyncio.run(create_fn(analysis_type="frequency"))
+
+
+def test_element_geometry_tool_forwards_fixed_route_and_closed_variants() -> None:
+    assert PUBLIC_TOOL_ACTIONS["assign_element_geometry"] == ("element_geometry", "assign")
+
+    client = FakeClient()
+    app = create_server(client)
+    tools = getattr(getattr(app, "_tool_manager", None), "_tools", None) or getattr(app, "_tools")
+    geometry_fn = getattr(tools["assign_element_geometry"], "fn", tools["assign_element_geometry"])
+
+    asyncio.run(
+        geometry_fn(
+            analysis_id="Analysis",
+            kind="shell",
+            targets=[{"object_name": "Plate", "subelements": ["Face1"]}],
+            thickness_m=0.002,
+            offset=0.25,
+        )
+    )
+    assert client.calls[-1] == (
+        "element_geometry",
+        {
+            "action": "assign",
+            "analysis_id": "Analysis",
+            "kind": "shell",
+            "targets": [{"object_name": "Plate", "subelements": ["Face1"]}],
+            "thickness_m": 0.002,
+            "offset": 0.25,
+        },
+    )
+
+    asyncio.run(
+        geometry_fn(
+            analysis_id="Analysis",
+            kind="beam_section",
+            section_type="rectangular",
+            targets=[{"object_name": "Beam", "subelements": ["Edge1"]}],
+            rect_width_m=0.02,
+            rect_height_m=0.04,
+        )
+    )
+    assert client.calls[-1][0] == "element_geometry"
+    assert client.calls[-1][1]["action"] == "assign"
+    assert client.calls[-1][1]["section_type"] == "rectangular"
+    assert client.calls[-1][1]["rect_width_m"] == 0.02
+    assert "offset" not in client.calls[-1][1]
+
+    asyncio.run(
+        geometry_fn(
+            analysis_id="Analysis",
+            kind="beam_rotation",
+            targets=[{"object_name": "Beam", "subelements": ["Edge1"]}],
+            rotation_rad=1.5,
+        )
+    )
+    assert client.calls[-1][1]["rotation_rad"] == 1.5
+
+    with pytest.raises(ValidationError):
+        asyncio.run(
+            geometry_fn(
+                analysis_id="Analysis",
+                kind="shell",
+                targets=[],
+                thickness_m=0.002,
+            )
+        )
+    with pytest.raises(ValidationError):
+        asyncio.run(
+            geometry_fn(
+                analysis_id="Analysis",
+                kind="beam_section",
+                section_type="circular",
+                targets=[{"object_name": "Beam", "subelements": ["Face1"]}],
+                circ_diameter_m=0.01,
+            )
+        )
+
+
+def test_create_mesh_forwards_element_dimension_and_defaults_to_3d() -> None:
+    client = FakeClient()
+    app = create_server(client)
+    tools = getattr(getattr(app, "_tool_manager", None), "_tools", None) or getattr(app, "_tools")
+    mesh_fn = getattr(tools["create_mesh"], "fn", tools["create_mesh"])
+
+    asyncio.run(mesh_fn(analysis_id="Analysis", element_dimension="1d"))
+    assert client.calls[-1] == (
+        "mesh",
+        {
+            "action": "create",
+            "analysis_id": "Analysis",
+            "second_order": False,
+            "element_dimension": "1d",
+        },
+    )
+
+    asyncio.run(mesh_fn(analysis_id="Analysis"))
+    assert client.calls[-1][1]["element_dimension"] == "3d"
 
 
 def test_add_constraint_targets_use_object_name_and_subelements() -> None:

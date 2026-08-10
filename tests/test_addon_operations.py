@@ -276,6 +276,17 @@ class _AnalysisApp:
 class _NativeConnectionSolver:
     TypeId = "Fem::SolverCalculiX"
     AnalysisType = "static"
+    ExcludeBendingStiffness = False
+    BeamReducedIntegration = False
+
+    def getTypeIdOfProperty(self, name):
+        return {"ExcludeBendingStiffness": "App::PropertyBool", "BeamReducedIntegration": "App::PropertyBool"}[name]
+
+
+class _NativeConnectionSolverWithoutReduced:
+    TypeId = "Fem::SolverCalculiX"
+    AnalysisType = "static"
+    ExcludeBendingStiffness = False
 
 
 class _NativeTie:
@@ -347,9 +358,9 @@ class _NativeContact:
 class _ConnectionAnalysis:
     TypeId = "Fem::FemAnalysis"
 
-    def __init__(self, name: str = "Analysis"):
+    def __init__(self, name: str = "Analysis", solver_factory=_NativeConnectionSolver):
         self.Name = self.Label = name
-        self.Group = [_NativeConnectionSolver()]
+        self.Group = [solver_factory()]
 
     def addObject(self, obj):
         self.Group.append(obj)
@@ -358,8 +369,8 @@ class _ConnectionAnalysis:
 class _ConnectionDocument:
     Name = "Doc"
 
-    def __init__(self):
-        self.analysis = _ConnectionAnalysis()
+    def __init__(self, solver_factory=_NativeConnectionSolver):
+        self.analysis = _ConnectionAnalysis(solver_factory=solver_factory)
         self.geometry = _Geometry()
         self.Objects = [self.analysis, self.geometry]
         self._objects = {"Analysis": self.analysis, "Geometry": self.geometry}
@@ -379,8 +390,8 @@ class _ConnectionDocument:
 
 
 class _ConnectionApp:
-    def __init__(self):
-        self.ActiveDocument = _ConnectionDocument()
+    def __init__(self, solver_factory=_NativeConnectionSolver):
+        self.ActiveDocument = _ConnectionDocument(solver_factory=solver_factory)
 
     @staticmethod
     def Version():
@@ -407,6 +418,88 @@ class _ObjectsFemWithR4Connections(_ObjectsFemWithConnections):
         return _NativePlaneRotation(name)
 
 
+class _NativeElementGeometry:
+    """Closed native-shaped geometry object for section/rotation mapping tests."""
+
+    _property_types = {
+        "References": "App::PropertyLinkSubListGlobal",
+        "SectionType": "App::PropertyEnumeration",
+        "RectWidth": "App::PropertyLength",
+        "RectHeight": "App::PropertyLength",
+        "CircDiameter": "App::PropertyLength",
+        "PipeDiameter": "App::PropertyLength",
+        "PipeThickness": "App::PropertyLength",
+        "Axis1Length": "App::PropertyLength",
+        "Axis2Length": "App::PropertyLength",
+        "BoxHeight": "App::PropertyLength",
+        "BoxWidth": "App::PropertyLength",
+        "BoxT1": "App::PropertyLength",
+        "BoxT2": "App::PropertyLength",
+        "BoxT3": "App::PropertyLength",
+        "BoxT4": "App::PropertyLength",
+        "TrussArea": "App::PropertyArea",
+        "Thickness": "App::PropertyLength",
+        "Offset": "App::PropertyFloat",
+        "Rotation": "App::PropertyAngle",
+    }
+
+    def __init__(self, name: str, semantic_type: str):
+        object.__setattr__(self, "Name", name)
+        object.__setattr__(self, "Label", name)
+        object.__setattr__(self, "TypeId", "Fem::FeaturePython")
+        object.__setattr__(self, "Proxy", type("Proxy", (), {"Type": semantic_type})())
+        for prop in self._property_types:
+            object.__setattr__(self, prop, [] if prop == "References" else None)
+
+    def __setattr__(self, name, value):
+        if name not in self._property_types and name not in {"Name", "Label", "TypeId", "Proxy"}:
+            raise AssertionError("unexpected native element property: {}".format(name))
+        object.__setattr__(self, name, value)
+
+    def getTypeIdOfProperty(self, name):
+        return self._property_types[name]
+
+
+class _NativeGmshMesh:
+    _allowed = {"Name", "Label", "TypeId", "Shape", "ElementDimension"}
+
+    def __init__(self, name: str):
+        object.__setattr__(self, "Name", name)
+        object.__setattr__(self, "Label", name)
+        object.__setattr__(self, "TypeId", "Fem::FemMeshGmsh")
+        object.__setattr__(self, "Shape", None)
+        object.__setattr__(self, "ElementDimension", "From Shape")
+
+    def __setattr__(self, name, value):
+        if name not in self._allowed:
+            raise AssertionError("unexpected native mesh property: {}".format(name))
+        object.__setattr__(self, name, value)
+
+
+def _register_geometry(doc, obj):
+    doc.Objects.append(obj)
+    doc._objects[obj.Name] = obj
+    return obj
+
+
+class _ObjectsFemWithGeometry(_ObjectsFemWithConnections):
+    @staticmethod
+    def makeMeshGmsh(doc, name="GmshMesh"):
+        return _register_geometry(doc, _NativeGmshMesh(name))
+
+    @staticmethod
+    def makeElementGeometry1D(doc, name="ElementGeometry1D"):
+        return _register_geometry(doc, _NativeElementGeometry(name, "Fem::ElementGeometry1D"))
+
+    @staticmethod
+    def makeElementGeometry2D(doc, name="ElementGeometry2D"):
+        return _register_geometry(doc, _NativeElementGeometry(name, "Fem::ElementGeometry2D"))
+
+    @staticmethod
+    def makeElementRotation1D(doc, name="ElementRotation1D"):
+        return _register_geometry(doc, _NativeElementGeometry(name, "Fem::ElementRotation1D"))
+
+
 def _analysis_solver(app: _AnalysisApp):
     return next(item for item in app.ActiveDocument.Objects if item.TypeId == "Fem::SolverCalculiX")
 
@@ -421,6 +514,186 @@ def _connection_refs(*faces):
         {"object": "Geometry", "sub_element": face}
         for face in faces
     ]
+
+
+def _element_refs(*subelements):
+    return [{"object": "Geometry", "sub_element": item} for item in subelements]
+
+
+def _geometry_operations(objects_fem=_ObjectsFemWithGeometry, solver_factory=_NativeConnectionSolver):
+    app = _ConnectionApp(solver_factory=solver_factory)
+    return app, FreeCADOperations(app=app, objects_fem=objects_fem)
+
+
+def test_element_geometry_beam_section_maps_native_enum_dimensions_and_edges() -> None:
+    app, operations = _geometry_operations()
+    result = operations.assign_element_geometry(
+        "Analysis",
+        "beam_section",
+        {
+            "references": _element_refs("Edge1"),
+            "section_type": "rectangular",
+            "rect_width_m": 0.02,
+            "rect_height_m": 0.03,
+        },
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert result["kind"] == "beam_section"
+    assert native.Proxy.Type == "Fem::ElementGeometry1D"
+    assert native.SectionType == "Rectangular"
+    assert native.RectWidth == "0.02 m"
+    assert native.RectHeight == "0.03 m"
+    assert native.References == [(app.ActiveDocument.geometry, "Edge1")]
+
+
+def test_element_geometry_shell_and_rotation_map_native_face_edge_properties() -> None:
+    app, operations = _geometry_operations()
+    shell = operations.assign_element_geometry(
+        "Analysis",
+        "shell",
+        {"references": _element_refs("Face1"), "thickness_m": 0.002, "offset": -0.25},
+    )
+    shell_native = app.ActiveDocument.analysis.Group[-1]
+    assert shell["kind"] == "shell"
+    assert shell_native.Proxy.Type == "Fem::ElementGeometry2D"
+    assert shell_native.Thickness == "0.002 m"
+    assert shell_native.Offset == -0.25
+
+    app, operations = _geometry_operations()
+    rotation = operations.assign_element_geometry(
+        "Analysis",
+        "beam_rotation",
+        {"references": _element_refs("Edge1"), "rotation_rad": 0.5},
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert rotation["kind"] == "beam_rotation"
+    assert native.Proxy.Type == "Fem::ElementRotation1D"
+    assert native.Rotation == "0.5 rad"
+    assert native.References == [(app.ActiveDocument.geometry, "Edge1")]
+
+
+@pytest.mark.parametrize(
+    "section_type,values,expected",
+    [
+        ("circular", {"circ_diameter_m": 0.02}, "Circular"),
+        ("pipe", {"pipe_diameter_m": 0.03, "pipe_thickness_m": 0.002}, "Pipe"),
+        ("elliptical", {"axis1_length_m": 0.03, "axis2_length_m": 0.02}, "Elliptical"),
+        ("box", {"box_width_m": 0.03, "box_height_m": 0.04, "box_t1_m": 0.002, "box_t2_m": 0.002, "box_t3_m": 0.002, "box_t4_m": 0.002}, "Box"),
+        ("truss", {"truss_area_m2": 0.0002}, "Rectangular"),
+    ],
+)
+def test_element_geometry_beam_section_enum_contract(section_type, values, expected) -> None:
+    app, operations = _geometry_operations()
+    operations.assign_element_geometry(
+        "Analysis", "beam_section", {"references": _element_refs("Edge1"), "section_type": section_type, **values}
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert native.SectionType == expected
+    if section_type == "pipe":
+        assert app.ActiveDocument.analysis.Group[0].BeamReducedIntegration is True
+    if section_type == "truss":
+        assert native.TrussArea == "0.0002 m^2"
+        assert app.ActiveDocument.analysis.Group[0].ExcludeBendingStiffness is True
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"references": _element_refs("Face1"), "thickness_m": 0.001, "offset": 2.0},
+        {"references": _element_refs("Edge1"), "section_type": "pipe", "pipe_diameter_m": 0.01, "pipe_thickness_m": 0.005},
+        {"references": _element_refs("Edge1"), "section_type": "box", "box_width_m": 0.01, "box_height_m": 0.01, "box_t1_m": 0.006, "box_t2_m": 0.001, "box_t3_m": 0.005, "box_t4_m": 0.001},
+        {"references": _element_refs("Face1"), "thickness_m": 0.001, "section_type": "circular"},
+        {"references": _element_refs("Edge1", "Edge1"), "section_type": "rectangular", "rect_width_m": 0.01, "rect_height_m": 0.02},
+        {"references": _element_refs("Face1"), "section_type": "rectangular", "rect_width_m": 0.01, "rect_height_m": 0.02},
+    ],
+)
+def test_element_geometry_rejects_wrong_duplicate_or_inconsistent_contract(params) -> None:
+    app, operations = _geometry_operations()
+    before = list(app.ActiveDocument.analysis.Group)
+    kind = "shell" if "thickness_m" in params else "beam_section"
+    with pytest.raises(OperationError):
+        operations.assign_element_geometry("Analysis", kind, params)
+    assert app.ActiveDocument.analysis.Group == before
+
+
+def test_truss_normal_beam_does_not_silently_clear_solver_exclusion_and_shell_conflicts() -> None:
+    app, operations = _geometry_operations()
+    operations.assign_element_geometry(
+        "Analysis", "beam_section", {"references": _element_refs("Edge1"), "section_type": "truss", "truss_area_m2": 0.0002}
+    )
+    operations.assign_element_geometry(
+        "Analysis", "beam_section", {"references": _element_refs("Edge1"), "section_type": "truss", "truss_area_m2": 0.0003}
+    )
+    assert app.ActiveDocument.analysis.Group[0].ExcludeBendingStiffness is True
+    before = list(app.ActiveDocument.analysis.Group)
+    with pytest.raises(OperationError):
+        operations.assign_element_geometry(
+            "Analysis", "beam_section", {"references": _element_refs("Edge1"), "section_type": "rectangular", "rect_width_m": 0.01, "rect_height_m": 0.02}
+        )
+    assert app.ActiveDocument.analysis.Group == before
+    with pytest.raises(OperationError):
+        operations.assign_element_geometry(
+            "Analysis", "shell", {"references": _element_refs("Face1"), "thickness_m": 0.001}
+        )
+
+
+def test_element_geometry_missing_factory_or_property_aborts_transaction() -> None:
+    app, operations = _geometry_operations(objects_fem=object())
+    with pytest.raises(OperationError):
+        operations.assign_element_geometry(
+            "Analysis", "shell", {"references": _element_refs("Face1"), "thickness_m": 0.001}
+        )
+    assert app.ActiveDocument.transaction_events[-1][0] == "abort"
+    assert len(app.ActiveDocument.analysis.Group) == 1
+
+    app, operations = _geometry_operations(solver_factory=_NativeConnectionSolverWithoutReduced)
+    with pytest.raises(OperationError):
+        operations.assign_element_geometry(
+            "Analysis",
+            "beam_section",
+            {
+                "references": _element_refs("Edge1"),
+                "section_type": "pipe",
+                "pipe_diameter_m": 0.03,
+                "pipe_thickness_m": 0.002,
+            },
+        )
+    assert app.ActiveDocument.transaction_events[-1][0] == "abort"
+    assert len(app.ActiveDocument.analysis.Group) == 1
+
+    class _MissingReferences(_ObjectsFemWithGeometry):
+        @staticmethod
+        def makeElementGeometry2D(doc, name="ElementGeometry2D"):
+            obj = _register_geometry(doc, _NativeElementGeometry(name, "Fem::ElementGeometry2D"))
+            object.__delattr__(obj, "References")
+            return obj
+
+    app, operations = _geometry_operations(objects_fem=_MissingReferences)
+    with pytest.raises(OperationError):
+        operations.assign_element_geometry(
+            "Analysis", "shell", {"references": _element_refs("Face1"), "thickness_m": 0.001}
+        )
+    assert app.ActiveDocument.transaction_events[-1][0] == "abort"
+
+
+def test_create_mesh_element_dimension_maps_native_enum_and_missing_property_fails_closed() -> None:
+    app, operations = _geometry_operations()
+    result = operations.create_mesh("Analysis", element_dimension="2d", shape="Geometry")
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert result["name"] == native.Name
+    assert native.ElementDimension == "2D"
+
+    class _MissingDimension(_ObjectsFemWithGeometry):
+        @staticmethod
+        def makeMeshGmsh(doc, name="GmshMesh"):
+            obj = _register_geometry(doc, _NativeGmshMesh(name))
+            object.__delattr__(obj, "ElementDimension")
+            return obj
+
+    app, operations = _geometry_operations(objects_fem=_MissingDimension)
+    with pytest.raises(OperationError):
+        operations.create_mesh("Analysis", element_dimension="1d", shape="Geometry")
+    assert app.ActiveDocument.transaction_events[-1][0] == "abort"
 
 
 def test_tie_connection_maps_native_references_in_slave_master_order() -> None:

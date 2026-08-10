@@ -29,6 +29,7 @@ def test_allowlist_and_nested_auth_shape() -> None:
     assert parse_request_line(json.dumps({"id": 4, "method": "remote_load", "params": {}})).method == "remote_load"
     assert parse_request_line(json.dumps({"id": 5, "method": "remote_displacement", "params": {}})).method == "remote_displacement"
     assert parse_request_line(json.dumps({"id": 6, "method": "connection", "params": {}})).method == "connection"
+    assert parse_request_line(json.dumps({"id": 7, "method": "element_geometry", "params": {}})).method == "element_geometry"
     with pytest.raises(ProtocolError):
         parse_request_line('{"id":1,"method":"ping","params":{}}')
     with pytest.raises(ProtocolError):
@@ -83,6 +84,93 @@ def test_connection_route_forwards_tie_and_contact_contracts() -> None:
     }))
     assert contact["connection_id"] == "Native_contact"
     assert operations.calls[-1][2]["surface_behavior"] == "hard"
+
+
+def test_element_geometry_route_forwards_explicit_native_references_and_kind() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        def __init__(self):
+            self.calls = []
+
+        def assign_element_geometry(self, analysis, kind, params):
+            self.calls.append((analysis, kind, params))
+            return {"name": "NativeGeometry", "kind": kind}
+
+    operations = _Operations()
+    service = FEMService(
+        operations=operations,
+        selection=_Selection(),
+        jobs=object(),
+        pipeline=object(),
+    )
+    result = service(Request(85, "element_geometry", {
+        "action": "assign",
+        "analysis_id": "Analysis",
+        "kind": "beam_section",
+        "targets": [{"object_name": "Beam", "subelements": ["Edge1"]}],
+        "section_type": "pipe",
+        "pipe_diameter_m": 0.03,
+        "pipe_thickness_m": 0.002,
+    }))
+    assert result["element_geometry_id"] == "NativeGeometry"
+    assert operations.calls[-1] == (
+        "Analysis",
+        "beam_section",
+        {
+            "section_type": "pipe",
+            "pipe_diameter_m": 0.03,
+            "pipe_thickness_m": 0.002,
+            "references": [{"object": "Beam", "sub_element": "Edge1"}],
+        },
+    )
+
+
+def test_element_geometry_route_rejects_wrong_or_unwanted_fields_before_native() -> None:
+    class _Selection:
+        gui = None
+
+        @staticmethod
+        def capture():
+            return {"items": []}
+
+    class _Operations:
+        app = None
+
+        @staticmethod
+        def assign_element_geometry(*_args, **_kwargs):
+            raise AssertionError("invalid geometry reached native operations")
+
+    service = FEMService(
+        operations=_Operations(),
+        selection=_Selection(),
+        jobs=object(),
+        pipeline=object(),
+    )
+    base = {
+        "action": "assign",
+        "analysis_id": "Analysis",
+        "kind": "shell",
+        "targets": [{"object_name": "Plate", "subelements": ["Face1"]}],
+        "thickness_m": 0.001,
+    }
+    for extra in (
+        {"section_type": "rectangular"},
+        {"targets": [{"object_name": "Plate", "subelements": ["Edge1"]}]},
+        {"targets": [{"object_name": "Plate", "subelements": ["Face1", "Face1"]}]},
+        {"thickness_m": float("nan")},
+    ):
+        params = dict(base)
+        params.update(extra)
+        with pytest.raises(ServiceError):
+            service(Request(86, "element_geometry", params))
 
 
 def test_connection_route_forwards_closed_cyclic_symmetry_contract() -> None:

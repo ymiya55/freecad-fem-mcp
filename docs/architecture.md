@@ -20,7 +20,7 @@ MCPプロセスはFreeCADモジュールを直接importしません。Addonだ�
 
 `src/freecad_fem_mcp`は次を担当します。
 
-- 23個の固定MCPツール
+- 24個の固定MCPツール
 - Pydanticによる厳格な入力スキーマ
 - MCP tool annotation
 - 接続レコードの検証
@@ -44,7 +44,7 @@ MCPプロセスはFreeCADモジュールを直接importしません。Addonだ�
 
 ### ジョブ
 
-`create_mesh`は`femmesh.gmshtools.GmshTools`を、`start_analysis`は`femsolver.calculix.calculixtools.CalculiXTools`を使用します。AddonからGmshやCalculiXを生のコマンドとして起動しません。
+`create_mesh`は`femmesh.gmshtools.GmshTools`を、`start_analysis`は`femsolver.calculix.calculixtools.CalculiXTools`を使用します。`assign_element_geometry`はFreeCAD 1.1.xの`ElementGeometry1D`、`ElementRotation1D`、`ElementGeometry2D`だけへ閉じたSI入力を写像します。AddonからGmshやCalculiXを生のコマンドとして起動しません。
 
 ジョブ状態はAddonに保持されるため、MCPプロセスが再起動してもFreeCADが生きていれば再照会できます。CalculiXの完了時はFreeCAD内部の結果importが終わった次のQtイベントでcompletedへ遷移します。
 

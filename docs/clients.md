@@ -144,6 +144,15 @@ periodを満たします。`automatic_incrementation`と`increments_maximum`もb
 iteration文字列、独立LoadCase、複数解析Stepは受け付けません。native出力に明示的な収束句が
 ある場合だけ、job/result応答にboundedな`convergence`要約を含めます。
 
+1D beamまたは2D shellの準備では、`create_mesh.element_dimension`へ`1d`または`2d`を明示します。
+`assign_element_geometry`の`targets`は省略できず、beamでは実在するEdge、shellでは実在するFaceだけを
+指定します。`kind=shell`はSIの`thickness_m`と-1〜1の`offset`、`kind=beam_rotation`は
+`rotation_rad`を受け付けます。`kind=beam_section`の`section_type`は`rectangular`、`circular`、
+`pipe`、`elliptical`、`box`、`truss`です。各断面に必要なSI寸法だけを指定し、別断面の寸法field、
+空参照、whole-object、Face/Edgeの取り違え、重複参照は拒否されます。Pipeは外径の半分未満の肉厚、
+Boxは内側寸法が正になる肉厚を必要とします。beam/trussとshell/membraneはsolver全体のelement modelを
+共有するため、同一analysisへ曖昧に混在させることはできません。
+
 TieとContactは`add_connection`を使い、`slave`と`master`へ実在するFaceを各1面指定します。
 Tieは`tolerance_m`と`adjust`が必須です。Contactはstatic・non-thermalに限定し、
 `surface_behavior`へ`hard`、`linear`、`tied`を指定します。Linear/Tiedでは正の

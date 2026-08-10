@@ -80,8 +80,19 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
         {"action", "analysis_id"},
     ),
     ("mesh", "create"): (
-        {"action", "document_id", "analysis_id", "element_size_mm", "second_order", "shape_id"},
+        {"action", "document_id", "analysis_id", "element_size_mm", "second_order", "shape_id", "element_dimension"},
         {"action", "analysis_id"},
+    ),
+    ("element_geometry", "assign"): (
+        {
+            "action", "document_id", "analysis_id", "kind", "targets",
+            "thickness_m", "offset", "section_type", "rotation_rad",
+            "rect_width_m", "rect_height_m", "circ_diameter_m",
+            "pipe_diameter_m", "pipe_thickness_m", "axis1_length_m", "axis2_length_m",
+            "box_width_m", "box_height_m", "box_t1_m", "box_t2_m", "box_t3_m", "box_t4_m",
+            "truss_area_m2",
+        },
+        {"action", "analysis_id", "kind", "targets"},
     ),
     ("validate", "validate"): (
         {"action", "document_id", "analysis_id", "strict"},
@@ -285,12 +296,19 @@ class FEMService:
             cls._optional_finite(params, "yield_strength_pa", positive=True)
             cls._validate_nonlinear_material(params)
             return
+        if method == "element_geometry":
+            cls._validate_element_geometry_request(params)
+            return
         if method == "mesh":
             cls._require_identifier(params, "analysis_id")
             cls._optional_finite(params, "element_size_mm", positive=True)
             if "second_order" in params:
                 cls._strict_bool(params["second_order"], "second_order")
             cls._optional_text(params, "shape_id")
+            if "element_dimension" in params:
+                dimension = params["element_dimension"]
+                if dimension not in {"1d", "2d", "3d"}:
+                    raise ServiceError("element_dimension is unsupported")
             return
         if method == "validate":
             cls._require_identifier(params, "analysis_id")
@@ -319,6 +337,109 @@ class FEMService:
                 cls._strict_int(params["frame"], "frame", 0, 100000)
             if params.get("mode") is not None and params.get("frame", 0) not in (None, 0):
                 raise ServiceError("mode and nonzero frame cannot be combined")
+
+    @classmethod
+    def _validate_element_geometry_request(cls, params: Mapping[str, Any]) -> None:
+        """Validate the closed native shell/beam geometry assignment route."""
+
+        cls._require_identifier(params, "analysis_id")
+        kind = params.get("kind")
+        if kind not in {"shell", "beam_section", "beam_rotation"}:
+            raise ServiceError("element geometry kind is unsupported")
+
+        targets = params.get("targets")
+        if not isinstance(targets, list) or not 1 <= len(targets) <= 128:
+            raise ServiceError("element geometry targets must be a non-empty bounded list")
+        seen: set[tuple[str, str]] = set()
+        reference_count = 0
+        prefix = "Face" if kind == "shell" else "Edge"
+        for target in targets:
+            if not isinstance(target, Mapping) or set(target) != {"object_name", "subelements"}:
+                raise ServiceError("element geometry target must contain exactly object_name and subelements")
+            object_name = target.get("object_name")
+            if (
+                not isinstance(object_name, str)
+                or not object_name
+                or len(object_name) > 256
+                or "\x00" in object_name
+                or any(ord(char) < 0x20 for char in object_name)
+            ):
+                raise ServiceError("element geometry target object_name is invalid")
+            subelements = target.get("subelements")
+            if not isinstance(subelements, list) or not 1 <= len(subelements) <= 64:
+                raise ServiceError("element geometry target subelements are invalid")
+            reference_count += len(subelements)
+            if reference_count > 128:
+                raise ServiceError("element geometry references are too numerous")
+            for subelement in subelements:
+                if not isinstance(subelement, str) or not subelement.startswith(prefix):
+                    raise ServiceError("element geometry targets must use {}N".format(prefix))
+                suffix = subelement[len(prefix):]
+                if (
+                    not suffix
+                    or not suffix.isascii()
+                    or not suffix.isdigit()
+                    or int(suffix) <= 0
+                    or (len(suffix) > 1 and suffix.startswith("0"))
+                ):
+                    raise ServiceError("element geometry targets must use {}N".format(prefix))
+                key = (object_name, subelement)
+                if key in seen:
+                    raise ServiceError("element geometry targets must be unique")
+                seen.add(key)
+
+        common = {"action", "document_id", "analysis_id", "kind", "targets"}
+
+        def bounded_number(key: str, *, minimum: float = 0.0, positive: bool = True) -> float:
+            if key not in params or params[key] is None:
+                raise ServiceError("{} is required".format(key))
+            number = cls._finite_value(params[key], key, strict_numeric=True)
+            if number > 1e6 or (positive and number <= minimum) or (not positive and number < minimum):
+                raise ServiceError("{} is outside the allowed range".format(key))
+            return number
+
+        if kind == "shell":
+            allowed = common | {"thickness_m", "offset"}
+            if set(params) - allowed:
+                raise ServiceError("fields are not valid for shell geometry")
+            bounded_number("thickness_m")
+            if "offset" in params:
+                offset = cls._finite_value(params["offset"], "offset", strict_numeric=True)
+                if not -1.0 <= offset <= 1.0:
+                    raise ServiceError("offset is outside the allowed range")
+            return
+
+        if kind == "beam_rotation":
+            allowed = common | {"rotation_rad"}
+            if set(params) - allowed:
+                raise ServiceError("fields are not valid for beam rotation geometry")
+            bounded_number("rotation_rad", minimum=-1e6, positive=False)
+            return
+
+        section_fields = {
+            "rectangular": {"rect_width_m", "rect_height_m"},
+            "circular": {"circ_diameter_m"},
+            "pipe": {"pipe_diameter_m", "pipe_thickness_m"},
+            "elliptical": {"axis1_length_m", "axis2_length_m"},
+            "box": {"box_width_m", "box_height_m", "box_t1_m", "box_t2_m", "box_t3_m", "box_t4_m"},
+            "truss": {"truss_area_m2"},
+        }
+        section_type = params.get("section_type")
+        if section_type not in section_fields:
+            raise ServiceError("section_type is unsupported")
+        allowed = common | {"section_type"} | section_fields[section_type]
+        if set(params) - allowed:
+            raise ServiceError("fields are not valid for beam section geometry")
+        for field in section_fields[section_type]:
+            bounded_number(field)
+        if section_type == "pipe":
+            if 2.0 * float(params["pipe_thickness_m"]) >= float(params["pipe_diameter_m"]):
+                raise ServiceError("pipe thickness must be less than half the outer diameter")
+        elif section_type == "box":
+            if float(params["box_t1_m"]) + float(params["box_t3_m"]) >= float(params["box_height_m"]):
+                raise ServiceError("box wall thicknesses must fit inside box dimensions")
+            if float(params["box_t2_m"]) + float(params["box_t4_m"]) >= float(params["box_width_m"]):
+                raise ServiceError("box wall thicknesses must fit inside box dimensions")
 
     @classmethod
     def _validate_analysis_options(cls, params: Mapping[str, Any]) -> None:
@@ -735,6 +856,15 @@ class FEMService:
                     "connections": ["tie", "contact", "cyclic_symmetry"],
                     "mpc_types": ["plane_rotation"],
                     "result_kinds": ["displacement", "stress", "strain", "von_mises", "reaction"],
+                    "element_dimensions": ["1d", "2d", "3d"],
+                    "element_geometry": {
+                        "shell": {"references": "Face", "fields": ["thickness_m", "offset"]},
+                        "beam_section": {
+                            "references": "Edge",
+                            "section_types": ["rectangular", "circular", "pipe", "elliptical", "box", "truss"],
+                        },
+                        "beam_rotation": {"references": "Edge", "fields": ["rotation_rad"]},
+                    },
                     "future_gates": list(_R6_FUTURE_GATES),
                 },
             }
@@ -865,6 +995,22 @@ class FEMService:
                 params["analysis_id"], params["connection_type"], connection
             )
             return {"connection_id": result["name"], **result}
+
+        if method == "element_geometry":
+            self._action(params, "assign")
+            # Typed geometry assignment never falls back to GUI selection:
+            # references are explicit FaceN/EdgeN EntityRefs and are passed in
+            # the native operation spelling only after strict validation.
+            geometry = {
+                key: value
+                for key, value in params.items()
+                if key not in {"action", "document_id", "analysis_id", "kind", "targets"}
+            }
+            geometry["references"] = self._references(params["targets"], strict_targets=True)
+            result = self.operations.assign_element_geometry(
+                params["analysis_id"], params["kind"], geometry
+            )
+            return {"element_geometry_id": result["name"], **result}
 
         if method == "mesh":
             self._action(params, "create")

@@ -535,6 +535,7 @@ class MeshRequest(StrictModel):
     element_size_mm: PositiveFiniteFloat | None = None
     second_order: StrictBool = False
     algorithm: Literal["gmsh"] = "gmsh"
+    element_dimension: Literal["1d", "2d", "3d"] = "3d"
     shape_id: BoundedText | None = None
 
 
@@ -1084,11 +1085,227 @@ class AddConnectionRequest(StrictModel):
         return self
 
 
+# R7.1 native beam/shell element geometry controls.  All dimensions are SI
+# metres at the public boundary.  The upper bound is deliberately conservative
+# so malformed model-generated values cannot create unbounded native geometry.
+ElementDimensionM = Annotated[
+    StrictFloat, Field(gt=0.0, le=1e6), AfterValidator(_finite)
+]
+ElementOffset = Annotated[
+    StrictFloat, Field(ge=-1.0, le=1.0), AfterValidator(_finite)
+]
+ElementRotationRad = Annotated[
+    StrictFloat, Field(ge=-1e6, le=1e6), AfterValidator(_finite)
+]
+ElementAreaM2 = Annotated[
+    StrictFloat, Field(gt=0.0, le=1e6), AfterValidator(_finite)
+]
+
+_FACE_REF_PATTERN = re.compile(r"^Face[1-9][0-9]*$")
+_EDGE_REF_PATTERN = re.compile(r"^Edge[1-9][0-9]*$")
+
+
+def _validate_element_targets(
+    targets: list[EntityRef], pattern: re.Pattern[str], label: str
+) -> list[EntityRef]:
+    """Require explicit, non-empty, homogeneous Face/Edge references.
+
+    ``EntityRef`` intentionally permits an empty subelement list for legacy
+    selection-based tools.  Element geometry is different: an empty list would
+    mean "all elements", so R7.1 rejects it and also rejects duplicate refs.
+    """
+
+    if not targets:
+        raise ValueError("targets must contain at least one explicit reference")
+    seen: set[tuple[str, str]] = set()
+    for target in targets:
+        if not target.subelements:
+            raise ValueError("targets must contain explicit subelements")
+        for subelement in target.subelements:
+            if pattern.fullmatch(subelement) is None:
+                raise ValueError("{} targets must contain only {} references".format(label, label))
+            key = (target.object_name, subelement)
+            if key in seen:
+                raise ValueError("targets must not contain duplicate references")
+            seen.add(key)
+    return targets
+
+
+class AssignElementGeometryRequest(StrictModel):
+    """Closed R7.1 element geometry contract.
+
+    ``kind`` is the discriminator.  Variant-only fields are kept optional in
+    the flat wire model so the single MCP tool can expose one stable argument
+    surface; the model validator then enforces the same strict presence rules
+    as a discriminated union and rejects even explicitly supplied ``null``
+    values for unrelated dimensions.
+    """
+
+    document_id: BoundedText | None = None
+    analysis_id: BoundedText
+    kind: Literal["shell", "beam_section", "beam_rotation"]
+    targets: Annotated[list[EntityRef], Field(min_length=1, max_length=MAX_LIST)]
+
+    # Shell geometry (Fem::ElementGeometry2D).
+    thickness_m: ElementDimensionM | None = None
+    offset: ElementOffset | None = None
+
+    # Beam section geometry (Fem::ElementGeometry1D).  Names mirror the
+    # native properties while carrying explicit SI units in the public API.
+    section_type: Literal[
+        "rectangular", "circular", "pipe", "elliptical", "box", "truss"
+    ] | None = None
+    rect_width_m: ElementDimensionM | None = None
+    rect_height_m: ElementDimensionM | None = None
+    circ_diameter_m: ElementDimensionM | None = None
+    pipe_diameter_m: ElementDimensionM | None = None
+    pipe_thickness_m: ElementDimensionM | None = None
+    axis1_length_m: ElementDimensionM | None = None
+    axis2_length_m: ElementDimensionM | None = None
+    box_width_m: ElementDimensionM | None = None
+    box_height_m: ElementDimensionM | None = None
+    box_t1_m: ElementDimensionM | None = None
+    box_t2_m: ElementDimensionM | None = None
+    box_t3_m: ElementDimensionM | None = None
+    box_t4_m: ElementDimensionM | None = None
+    truss_area_m2: ElementAreaM2 | None = None
+
+    # Beam local rotation (Fem::ElementRotation1D).
+    rotation_rad: ElementRotationRad | None = None
+
+    @model_validator(mode="after")
+    def validate_element_geometry(self) -> "AssignElementGeometryRequest":
+        fields = {
+            "thickness_m",
+            "offset",
+            "section_type",
+            "rect_width_m",
+            "rect_height_m",
+            "circ_diameter_m",
+            "pipe_diameter_m",
+            "pipe_thickness_m",
+            "axis1_length_m",
+            "axis2_length_m",
+            "box_width_m",
+            "box_height_m",
+            "box_t1_m",
+            "box_t2_m",
+            "box_t3_m",
+            "box_t4_m",
+            "truss_area_m2",
+            "rotation_rad",
+        }
+        supplied = self.model_fields_set
+
+        if self.kind == "shell":
+            _validate_element_targets(self.targets, _FACE_REF_PATTERN, "Face")
+            if self.thickness_m is None:
+                raise ValueError("thickness_m is required for shell geometry")
+            # Omitted offset means the native/default mid-plane offset of zero.
+            if self.offset is None:
+                self.offset = 0.0
+            allowed = {"thickness_m", "offset"}
+            invalid = supplied.intersection(fields - allowed)
+            if invalid:
+                raise ValueError(
+                    "fields are not valid for shell geometry: {}".format(
+                        ", ".join(sorted(invalid))
+                    )
+                )
+            return self
+
+        if self.kind == "beam_rotation":
+            _validate_element_targets(self.targets, _EDGE_REF_PATTERN, "Edge")
+            if self.rotation_rad is None:
+                raise ValueError("rotation_rad is required for beam_rotation geometry")
+            allowed = {"rotation_rad"}
+            invalid = supplied.intersection(fields - allowed)
+            if invalid:
+                raise ValueError(
+                    "fields are not valid for beam_rotation geometry: {}".format(
+                        ", ".join(sorted(invalid))
+                    )
+                )
+            return self
+
+        # The Literal above makes this beam-section-only, while keeping the
+        # validation explicit if another geometry kind is added later.
+        _validate_element_targets(self.targets, _EDGE_REF_PATTERN, "Edge")
+        if self.section_type is None:
+            raise ValueError("section_type is required for beam_section geometry")
+        if any(field in supplied for field in ("thickness_m", "offset", "rotation_rad")):
+            raise ValueError("shell/rotation fields are not valid for beam_section geometry")
+
+        dimensions = {
+            "rectangular": {"rect_width_m", "rect_height_m"},
+            "circular": {"circ_diameter_m"},
+            "pipe": {"pipe_diameter_m", "pipe_thickness_m"},
+            "elliptical": {"axis1_length_m", "axis2_length_m"},
+            "box": {
+                "box_width_m",
+                "box_height_m",
+                "box_t1_m",
+                "box_t2_m",
+                "box_t3_m",
+                "box_t4_m",
+            },
+            "truss": {"truss_area_m2"},
+        }[self.section_type]
+        for field in dimensions:
+            if getattr(self, field) is None:
+                raise ValueError("{} is required for {} beam section".format(field, self.section_type))
+        invalid = supplied.intersection(fields - dimensions - {"section_type"})
+        if invalid:
+            raise ValueError(
+                "fields are not valid for {} beam section: {}".format(
+                    self.section_type, ", ".join(sorted(invalid))
+                )
+            )
+
+        if self.section_type == "pipe":
+            pipe_diameter = self.pipe_diameter_m
+            pipe_thickness = self.pipe_thickness_m
+            if pipe_diameter is None or pipe_thickness is None:
+                raise ValueError("pipe diameter and thickness are required")
+            if 2.0 * pipe_thickness >= pipe_diameter:
+                raise ValueError("pipe thickness must be less than half the outer diameter")
+        elif self.section_type == "box":
+            box_width = self.box_width_m
+            box_height = self.box_height_m
+            box_t1 = self.box_t1_m
+            box_t2 = self.box_t2_m
+            box_t3 = self.box_t3_m
+            box_t4 = self.box_t4_m
+            if any(value is None for value in (box_width, box_height, box_t1, box_t2, box_t3, box_t4)):
+                raise ValueError("box dimensions and wall thicknesses are required")
+            if box_t1 + box_t3 >= box_height:
+                raise ValueError("box_t1_m + box_t3_m must be less than box_height_m")
+            if box_t2 + box_t4 >= box_width:
+                raise ValueError("box_t2_m + box_t4_m must be less than box_width_m")
+        return self
+
+
+# Descriptive variant names make the discriminated contract discoverable to
+# integrations without introducing a second wire endpoint.  The public tool
+# accepts the flat AssignElementGeometryRequest above.
+class ShellElementGeometryRequest(AssignElementGeometryRequest):
+    kind: Literal["shell"] = "shell"
+
+
+class BeamSectionElementGeometryRequest(AssignElementGeometryRequest):
+    kind: Literal["beam_section"] = "beam_section"
+
+
+class BeamRotationElementGeometryRequest(AssignElementGeometryRequest):
+    kind: Literal["beam_rotation"] = "beam_rotation"
+
+
 class CreateMeshRequest(StrictModel):
     document_id: BoundedText | None = None
     analysis_id: BoundedText
     element_size_mm: PositiveFiniteFloat | None = None
     second_order: StrictBool = False
+    element_dimension: Literal["1d", "2d", "3d"] = "3d"
     shape_id: BoundedText | None = None
 
 
@@ -1166,6 +1383,7 @@ REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "remote_displacement": AddRemoteDisplacementRequest,
     "boundary_condition": AddBoundaryConditionRequest,
     "connection": AddConnectionRequest,
+    "element_geometry": AssignElementGeometryRequest,
     "mesh": MeshRequest,
     "validate": ValidateRequest,
     "jobs": JobsRequest,
@@ -1182,6 +1400,7 @@ PUBLIC_REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "save_document": SaveDocumentRequest,
     "create_analysis": CreateAnalysisRequest,
     "assign_material": AssignMaterialRequest,
+    "assign_element_geometry": AssignElementGeometryRequest,
     "add_constraint": AddConstraintRequest,
     "add_load": AddLoadRequest,
     "add_remote_load": AddRemoteLoadRequest,
@@ -1230,6 +1449,10 @@ AddRemoteLoadInput = AddRemoteLoadParams = AddRemoteLoadRequest
 AddRemoteDisplacementInput = AddRemoteDisplacementParams = AddRemoteDisplacementRequest
 AddBoundaryConditionInput = AddBoundaryConditionParams = AddBoundaryConditionRequest
 AddConnectionInput = AddConnectionParams = AddConnectionRequest
+AssignElementGeometryInput = AssignElementGeometryParams = AssignElementGeometryRequest
+# Short aliases used by clients that refer to the route payload by its bridge
+# method rather than the public tool verb.
+ElementGeometryRequest = ElementGeometryInput = ElementGeometryParams = AssignElementGeometryRequest
 CreateMeshInput = CreateMeshParams = CreateMeshRequest
 ValidateAnalysisInput = ValidateAnalysisParams = ValidateAnalysisRequest
 StartAnalysisInput = StartAnalysisParams = StartAnalysisRequest
@@ -1289,6 +1512,15 @@ __all__ = [
     "AddConnectionRequest",
     "AddConnectionInput",
     "AddConnectionParams",
+    "AssignElementGeometryRequest",
+    "AssignElementGeometryInput",
+    "AssignElementGeometryParams",
+    "ElementGeometryRequest",
+    "ElementGeometryInput",
+    "ElementGeometryParams",
+    "ShellElementGeometryRequest",
+    "BeamSectionElementGeometryRequest",
+    "BeamRotationElementGeometryRequest",
     "CreateMeshRequest",
     "CreateMeshInput",
     "CreateMeshParams",
@@ -1336,6 +1568,10 @@ __all__ = [
     "DocumentInput",
     "DocumentParams",
     "EntityRef",
+    "ElementDimensionM",
+    "ElementOffset",
+    "ElementRotationRad",
+    "ElementAreaM2",
     "EigenmodesCount",
     "EmptyRequest",
     "FiniteFloat",

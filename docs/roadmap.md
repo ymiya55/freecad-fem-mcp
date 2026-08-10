@@ -248,6 +248,122 @@ R6は現行対応範囲ではすべて将来計画とし、任意INPや旧solver
 同名fieldがunknownとして拒否されることをsecurity testで固定し、future gateが任意INP・native
 property・legacy solverへの実行経路にならないことを確認します。
 
+### R7: Native beam / shell analysis
+
+FreeCAD 1.1.xのnative document objectとCalculiX writerの組が確認できる1D beam／2D shell機能を
+MCPへ追加します。旧`SolverCcxTools`、任意INP、未検証のnative property名にはfallbackしません。
+既存の3D solid APIは既定動作を変更せず、要素次元を明示したときだけbeam／shell経路を有効にします。
+
+確認済みnative範囲は次のとおりです。
+
+- Gmsh `Fem::FemMeshGmsh.ElementDimension`: `1D`、`2D`、`3D`
+- beam断面 `Fem::ElementGeometry1D`: Rectangular、Circular、Pipe、Elliptical、Box
+- beam断面方向 `Fem::ElementRotation1D`
+- shell板厚・オフセット `Fem::ElementGeometry2D`
+- CalculiX writer: `*BEAM SECTION`、`*SHELL SECTION`、`*MEMBRANE SECTION`
+- solver設定: `BeamReducedIntegration`、`BeamShellResultOutput3D`、`ExcludeBendingStiffness`
+- beam／shellの回転自由度を扱うnative displacement/fixed writer
+- shell面を対象にできるnative tie/contact writer
+- node setに対する`Fem::ConstraintTransform` / CalculiX `*TRANSFORM`
+
+#### R7.0: 実機native契約の固定
+
+FreeCAD 1.1.3実機でfactory signature、TypeId、PropertiesList、enumeration、既定値、参照形式、
+analysis membershipをprobeし、対応表をcontract testのfixtureとして固定します。writerが生成する
+CalculiX keywordとメッシュ要素型も確認します。GUIに存在するだけ、または旧solverでしか動かない機能は
+この時点で除外します。
+
+**R7.0完了:** FreeCAD 1.1.3実機でfactory、proxy type、property型、enumeration、既定値、
+References形式を固定しました。native CalculiX geometry writerで5種類の`*BEAM SECTION`、trussの
+`*SOLID SECTION`、`*SHELL SECTION`、`*MEMBRANE SECTION`と単位変換をportable probeにより確認しました。
+
+#### R7.1: 要素次元と公開API
+
+`create_mesh`へ閉じた`element_dimension: 1d | 2d | 3d`を追加し、既定値は従来互換の`3d`とします。
+要素定義は新しい単一ツール`assign_element_geometry`のdiscriminated unionとして公開し、次の3種類だけを
+受け付けます。
+
+- `shell`: 正の`thickness_m`、有界な無次元`offset`、明示Face参照
+- `beam_section`: 断面種別ごとのSI寸法、明示Edge参照
+- `beam_rotation`: 有界な`rotation_rad`、明示Edge参照
+
+断面種別ごとに不要な寸法fieldをpresenceで拒否し、Pipe/Boxの肉厚、正寸法、内外径、重複参照を検証します。
+空参照による暗黙の全要素割当は初期版では許可しません。`get_status.capabilities`には、実機probeと
+統合試験に合格した要素次元・断面種別だけを通知します。
+
+**R7.1完了:** `create_mesh.element_dimension`と`assign_element_geometry`をMCP、bridge、protocol、service、
+operationsの全境界へ実装しました。shell、beam rotation、矩形・円形・Pipe・楕円・Box・trussをclosed schemaで
+二重検証し、Face/Edge参照、寸法、Pipe/Box幾何、混在要素model、native property型、transaction rollbackを
+fail closedにしました。Pipeは`BeamReducedIntegration`、trussは`ExcludeBendingStiffness`へnative写像します。
+FreeCAD 1.1.3実Addon smokeで2D mesh、全断面、truss、rotationのnative object/property作成を確認しました。
+
+#### R7.2: Shell vertical slice
+
+2D Gmshメッシュ、global material、`ElementGeometry2D`、fixed/displacement/force/pressure、解析実行、
+結果importとGUI表示を一連で実装します。`ExcludeBendingStiffness=false`をshell、`true`をmembraneとして
+閉じたsolver optionに写像します。板厚・offset・参照FaceとメッシュFaceの整合、ゼロ面積、未割当要素、
+solid要素混在、回転自由度を拘束し過ぎる条件を`validate_analysis`で診断します。
+
+最初の数値基準は、薄板片持ちの先端変位・固有振動数、および面内引張membrane patch testとします。
+理論値または収束解に対する許容誤差をテスト内に明記し、板厚変更に対する剛性スケーリングも確認します。
+
+#### R7.3: Beam vertical slice
+
+1D Gmshメッシュ、global material、5種類の`ElementGeometry1D`断面、`ElementRotation1D`、
+fixed/displacement/point force、解析実行、結果importとGUI表示を一連で実装します。
+Pipeではnative要件に従い`BeamReducedIntegration`を検証・設定します。
+`ExcludeBendingStiffness=true`はtruss presetとして扱い、beamとtrussを曖昧に混在させません。
+
+回転境界条件は既存`add_boundary_condition`を、nullableな3成分`rotation_rad`を持つ閉じた契約へ拡張し、
+beam/shell時だけnative `rotx/roty/rotz`へ写像します。solidだけの節点へ回転自由度を指定した場合は拒否します。
+数値基準は矩形・円形・Pipe片持ちbeamの変位、反力、固有振動数、断面回転90度の主軸入替、
+およびtruss軸力patch testとします。
+
+#### R7.4: 材料、複数領域、拘束の整合
+
+初期vertical sliceは単一global isotropic materialに限定し、その後native References/writerを実機確認して
+beam Edge／shell Faceごとの複数材料割当を追加します。同様に複数断面・複数板厚を明示参照で許可します。
+材料・断面・板厚の未割当、二重割当、1D/2D/3D対象の交差、非線形材料とのwriter互換を事前診断します。
+
+`ConstraintTransform`はRectangular/Cylindrical座標系、原点・軸・直交基底、明示参照を単位付きで
+安全に表現でき、新solver frameworkでwriter smokeと数値試験に合格したpresetだけを追加します。
+これはbeam end releaseの代替にはしません。真のconnector/beam releaseはR6 future gateのままです。
+
+#### R7.5: Shell tie/contactと結果契約
+
+既存`add_connection`をshell Face-to-Faceへ拡張します。FreeCAD 1.1.x native writerで確認できるtieと
+non-thermal contactだけを対象とし、shell法線、主従面、offsetを含む初期gap/penetration、板厚、同一面、
+混在solid-shell接触を診断します。自動ペアリング、熱接触、任意INP補正は追加しません。
+
+`get_results` / `show_result`は`BeamShellResultOutput3D`のtrue/false両方を検証し、元の1D/2D節点と
+CalculiXが展開した3D結果を混同しないmetadataを返します。変位・応力・ひずみ・反力、frequency、bucklingの
+対応block/frameを実測し、存在しない成分をゼロとして捏造しません。
+
+#### R7.6: GUI・MCP・安全性受け入れ
+
+FreeCAD GUIで各native object、参照、断面方向、板厚、メッシュ、結果pipelineを目視確認し、Codexを
+実MCP clientとしてfresh processからshellとbeamの作成・解析・結果表示まで実行します。API層とAddon層の
+二重検証、unknown field拒否、bounded list/number/text、transaction rollback、stale reference、
+混在次元、欠落断面・板厚・材料、非収束・cancel・GUI再接続を試験します。
+
+CIでは既存のpytest、Ruff、Bandit、pip-audit、repository scan、Gitleaksに加え、生成INPを保存・公開せずに
+keyword allowlistを検査します。任意CalculiX keyword、Python、shell command、未許可pathを入力できないこと、
+ログ・結果・captureがboundedかつsecret-redactedであることを受け入れ条件にします。
+
+#### R7実装順序とコミット境界
+
+1. R7.0 native probeとcontract fixture
+2. R7.1 API schema・capability・security boundary
+3. R7.2 shell vertical sliceと数値benchmark
+4. R7.3 beam vertical sliceと数値benchmark
+5. R7.4 複数領域・座標変換
+6. R7.5 shell interaction・beam/shell results
+7. R7.6 GUI/Codex MCP acceptanceと文書化
+
+各段階を独立コミットにし、その段階のproduction code、contract/security test、実FreeCAD smokeが揃うまで
+次のcapabilityを公開しません。コーディングはLuna Workerへファイル所有権を明示して委任し、Solは
+native契約判断、レビュー、統合、数値基準、ドキュメント、GUI/MCP受け入れを担当します。
+
 ## 受け入れ条件
 
 各リリースは、既存の線形静解析を壊さないことに加え、次を満たす必要があります。

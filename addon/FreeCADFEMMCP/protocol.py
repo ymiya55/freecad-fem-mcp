@@ -18,6 +18,7 @@ ALLOWED_METHODS = frozenset({
     "status", "document", "selection", "view", "capture", "open", "save",
     "analysis", "material", "constraint", "load", "boundary_condition", "connection",
     "remote_load", "remote_displacement", "mesh",
+    "element_geometry",
     "validate", "jobs", "results",
 })
 
