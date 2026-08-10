@@ -20,6 +20,9 @@ def test_static_scan_detects_forbidden_constructs(tmp_path: Path) -> None:
 
 def test_static_scan_detects_secret_shapes(tmp_path: Path) -> None:
     sample = tmp_path / "secrets.env"
+    # Construct the scanner fixture at runtime so the repository and its Git
+    # history never contain a credential-shaped literal that secret scanners
+    # could mistake for a real AWS access key.
     sample.write_text("AWS=AK" + "IA1234567890ABCDEF\n", encoding="utf-8")
     findings = scan_file(sample, tmp_path)
     rules = {finding.rule for finding in findings}
