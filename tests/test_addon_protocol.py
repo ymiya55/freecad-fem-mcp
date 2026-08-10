@@ -534,12 +534,21 @@ def test_typed_load_and_boundary_routes_use_native_constraint_kinds() -> None:
 
     boundary = service(Request(3, "boundary_condition", {
         "action": "add", "analysis_id": "Analysis", "boundary_type": "displacement",
-        "targets": target, "displacement_m": [0.0, 0.001, -0.002],
+        "targets": target, "displacement_m": [None, 0.001, -0.002],
+        "rotation_rad": [0.1, None, None],
     }))
     assert boundary["boundary_condition_id"] == "Native_displacement"
     assert operations.calls[-1][:2] == ("Analysis", "displacement")
-    assert operations.calls[-1][2]["xFree"] is False
     assert operations.calls[-1][2]["y"] == 0.001
+    assert operations.calls[-1][2]["xFree"] is True
+    assert operations.calls[-1][2]["rotxFree"] is False
+    assert operations.calls[-1][2]["rotx"] == 0.1
+
+    service(Request(31, "boundary_condition", {
+        "action": "add", "analysis_id": "Analysis", "boundary_type": "displacement",
+        "targets": target, "displacement_m": [None, 0.001, None],
+    }))
+    assert not any(key.startswith("rot") for key in operations.calls[-1][2])
 
     acceleration = service(Request(4, "load", {
         "action": "add", "analysis_id": "Analysis", "load_type": "acceleration",

@@ -17,6 +17,8 @@ class _NativeDisplacement:
         "Name", "Label", "TypeId", "References",
         "xFree", "yFree", "zFree",
         "xDisplacement", "yDisplacement", "zDisplacement",
+        "rotxFree", "rotyFree", "rotzFree",
+        "xRotation", "yRotation", "zRotation",
         "EnableAmplitude", "AmplitudeValues",
     }
 
@@ -28,6 +30,10 @@ class _NativeDisplacement:
     def __init__(self, name: str):
         self.Name, self.Label, self.TypeId = name, name, "Fem::ConstraintDisplacement"
         self.References = []
+        self.xFree = self.yFree = self.zFree = True
+        self.xDisplacement = self.yDisplacement = self.zDisplacement = None
+        self.rotxFree = self.rotyFree = self.rotzFree = True
+        self.xRotation = self.yRotation = self.zRotation = None
         self.EnableAmplitude = False
         self.AmplitudeValues = []
 
@@ -527,6 +533,9 @@ def _geometry_operations(objects_fem=_ObjectsFemWithGeometry, solver_factory=_Na
 
 def test_element_geometry_beam_section_maps_native_enum_dimensions_and_edges() -> None:
     app, operations = _geometry_operations()
+    solver = app.ActiveDocument.analysis.Group[0]
+    # A first normal beam section must explicitly select full integration.
+    solver.BeamReducedIntegration = True
     result = operations.assign_element_geometry(
         "Analysis",
         "beam_section",
@@ -544,6 +553,21 @@ def test_element_geometry_beam_section_maps_native_enum_dimensions_and_edges() -
     assert native.RectWidth == "0.02 m"
     assert native.RectHeight == "0.03 m"
     assert native.References == [(app.ActiveDocument.geometry, "Edge1")]
+    assert solver.BeamReducedIntegration is False
+
+    # Additional normal sections preserve the solver-global setting rather
+    # than silently changing a value established by the existing beam set.
+    solver.BeamReducedIntegration = True
+    operations.assign_element_geometry(
+        "Analysis",
+        "beam_section",
+        {
+            "references": _element_refs("Edge1"),
+            "section_type": "circular",
+            "circ_diameter_m": 0.02,
+        },
+    )
+    assert solver.BeamReducedIntegration is True
 
 
 def test_element_geometry_shell_and_rotation_map_native_face_edge_properties() -> None:
@@ -691,6 +715,23 @@ def test_element_geometry_missing_factory_or_property_aborts_transaction() -> No
     assert app.ActiveDocument.transaction_events[-1][0] == "abort"
     assert len(app.ActiveDocument.analysis.Group) == 1
 
+    # The first normal beam section also requires the native reduced-
+    # integration property; a missing property must leave no geometry behind.
+    app, operations = _geometry_operations(solver_factory=_NativeConnectionSolverWithoutReduced)
+    with pytest.raises(OperationError):
+        operations.assign_element_geometry(
+            "Analysis",
+            "beam_section",
+            {
+                "references": _element_refs("Edge1"),
+                "section_type": "rectangular",
+                "rect_width_m": 0.01,
+                "rect_height_m": 0.02,
+            },
+        )
+    assert app.ActiveDocument.transaction_events[-1][0] == "abort"
+    assert len(app.ActiveDocument.analysis.Group) == 1
+
     app, operations = _geometry_operations(solver_factory=_NativeConnectionSolverWithoutReduced)
     with pytest.raises(OperationError):
         operations.assign_element_geometry(
@@ -719,6 +760,77 @@ def test_element_geometry_missing_factory_or_property_aborts_transaction() -> No
             "Analysis", "shell", {"references": _element_refs("Face1"), "thickness_m": 0.001}
         )
     assert app.ActiveDocument.transaction_events[-1][0] == "abort"
+
+
+def test_beam_displacement_maps_translation_and_rotation_native_dofs() -> None:
+    class _BeamBoundaryObjectsFem(_ObjectsFemWithGeometry):
+        @staticmethod
+        def makeConstraintDisplacement(_doc, name):
+            return _NativeDisplacement(name)
+
+    app, operations = _geometry_operations(objects_fem=_BeamBoundaryObjectsFem)
+    operations.assign_element_geometry(
+        "Analysis",
+        "beam_section",
+        {
+            "references": _element_refs("Edge1"),
+            "section_type": "rectangular",
+            "rect_width_m": 0.01,
+            "rect_height_m": 0.02,
+        },
+    )
+    operations.assign_element_geometry(
+        "Analysis",
+        "beam_rotation",
+        {"references": _element_refs("Edge1"), "rotation_rad": 0.0},
+    )
+    result = operations.add_constraint(
+        "Analysis",
+        "displacement",
+        {
+            "references": _element_refs("Edge1"),
+            "x": None,
+            "y": 0.001,
+            "z": None,
+            "xFree": True,
+            "yFree": False,
+            "zFree": True,
+            "rotx": 0.25,
+            "roty": None,
+            "rotz": None,
+            "rotxFree": False,
+            "rotyFree": True,
+            "rotzFree": True,
+        },
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert result["kind"] == "displacement"
+    assert native.yDisplacement == "0.001 m"
+    assert native.xRotation == "0.25 rad"
+    assert (native.xFree, native.yFree, native.zFree) == (True, False, True)
+    assert (native.rotxFree, native.rotyFree, native.rotzFree) == (False, True, True)
+
+
+def test_solid_displacement_rejects_rotation_and_rolls_back() -> None:
+    app, operations = _boundary_operations()
+    before = list(app.ActiveDocument.analysis.Group)
+    with pytest.raises(OperationError, match="beam or shell"):
+        operations.add_constraint(
+            "Analysis",
+            "displacement",
+            {
+                "references": _connection_refs("Face1"),
+                "x": None,
+                "y": None,
+                "z": None,
+                "xFree": True,
+                "yFree": True,
+                "zFree": True,
+                "rotx": 0.1,
+                "rotxFree": False,
+            },
+        )
+    assert app.ActiveDocument.analysis.Group == before
 
 
 def test_create_mesh_element_dimension_maps_native_enum_and_missing_property_fails_closed() -> None:
@@ -1180,6 +1292,40 @@ def test_validate_preserves_existing_3d_solid_requirements() -> None:
     diagnostics = operations.validate("Analysis")["diagnostics"]
     assert not any("2d mesh" in str(item).lower() for item in diagnostics)
     assert not any("elementgeometry2d" in str(item).lower() for item in diagnostics)
+
+
+def test_validate_beam_mode_checks_1d_mesh_section_material_and_solver() -> None:
+    app, operations = _geometry_operations()
+    operations.assign_element_geometry(
+        "Analysis",
+        "beam_section",
+        {
+            "references": _element_refs("Edge1"),
+            "section_type": "rectangular",
+            "rect_width_m": 0.01,
+            "rect_height_m": 0.02,
+        },
+    )
+    operations.assign_element_geometry(
+        "Analysis",
+        "beam_rotation",
+        {"references": _element_refs("Edge1"), "rotation_rad": 0.0},
+    )
+    analysis = app.ActiveDocument.analysis
+    analysis.Group.extend(
+        [
+            type("MaterialBeam", (), {"Name": "MaterialBeam", "Label": "MaterialBeam", "TypeId": "App::MaterialObjectPython"})(),
+            type("BeamMesh", (), {"Name": "BeamMesh", "Label": "BeamMesh", "TypeId": "Fem::FemMeshGmsh", "ElementDimension": "1D"})(),
+        ]
+    )
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert not any("1d mesh" in str(item).lower() for item in diagnostics)
+    assert not any("elementgeometry1d beam section" in str(item).lower() for item in diagnostics)
+    assert not any("invalid sectiontype" in str(item).lower() for item in diagnostics)
+
+    analysis.Group[-1].ElementDimension = "3D"
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert "analysis requires a 1D mesh (ElementDimension=1D)" in diagnostics
 
 
 def test_validate_rejects_membrane_pressure_before_solver_start() -> None:

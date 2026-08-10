@@ -712,9 +712,10 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         description=(
             "Add a native fixed, prescribed-displacement, pin, or roller "
             "boundary condition. Fixed/preset "
-            "conditions take no displacement; displacement requires exactly "
-            "three displacement_m components in meters. Roller requires an "
-            "axis or axis-aligned normal_m. Optional amplitude is supported "
+            "conditions take no displacement/rotation; displacement accepts "
+            "nullable displacement_m and rotation_rad vectors, with at least "
+            "one constrained component. Roller requires an axis or axis-aligned normal_m. "
+            "Optional amplitude is supported "
             "only for prescribed displacement. Targets may be empty to use "
             "the current GUI selection."
         ),
@@ -740,7 +741,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             ),
         ]
         | None = None,
-        displacement_m: Vector3 | None = None,
+        displacement_m: RemoteDisplacementVector3 | None = None,
+        rotation_rad: RemoteRotationVector3 | None = None,
         axis: Literal["x", "y", "z"] | None = None,
         normal_m: Vector3 | None = None,
         amplitude: Amplitude | None = None,
@@ -751,6 +753,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             document_id=document_id,
             targets=targets or [],
             displacement_m=displacement_m,
+            rotation_rad=rotation_rad,
             axis=axis,
             normal_m=normal_m,
             amplitude=amplitude,

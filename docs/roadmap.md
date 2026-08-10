@@ -326,6 +326,14 @@ beam/shell時だけnative `rotx/roty/rotz`へ写像します。solidだけの節
 数値基準は矩形・円形・Pipe片持ちbeamの変位、反力、固有振動数、断面回転90度の主軸入替、
 およびtruss軸力patch testとします。
 
+**R7.3静解析範囲完了:** nullableな並進`displacement_m`と回転`rotation_rad`を公開契約へ追加し、
+FreeCAD 1.1.3 nativeの並進・回転自由度へ写像しました。solid-only解析の回転、1D mesh・材料・断面・
+回転参照・solver設定の不整合は実行前に拒否します。通常beamの初回断面は
+`BeamReducedIntegration=false`、Pipeは`true`、trussは`ExcludeBendingStiffness=true`として曖昧な
+混在を防ぎます。実機benchmarkでは矩形片持ちbeamのEuler変位に対する相対誤差0.284%、truss軸変位の
+相対誤差0.061%で、両方ともGmsh、CalculiX、`FemPostPipeline` importまで完走しました。円形・Pipe、
+反力、断面回転、固有振動数の結果契約はR7.5で追加します。
+
 #### R7.4: 材料、複数領域、拘束の整合
 
 初期vertical sliceは単一global isotropic materialに限定し、その後native References/writerを実機確認して

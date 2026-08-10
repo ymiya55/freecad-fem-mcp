@@ -344,7 +344,8 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
         boundary_fn(
             analysis_id="Analysis",
             boundary_type="displacement",
-            displacement_m=[0.0, 0.0, 0.001],
+            displacement_m=[None, 0.0, 0.001],
+            rotation_rad=[0.1, None, None],
             amplitude=[
                 {"time_s": 0.0, "scale": 0.0},
                 {"time_s": 1.0, "scale": 1.0},
@@ -374,6 +375,8 @@ def test_typed_load_and_boundary_tools_use_dedicated_bridge_methods() -> None:
     assert client.calls[3][0] == "boundary_condition"
     assert client.calls[3][1]["action"] == "add"
     assert client.calls[3][1]["boundary_type"] == "displacement"
+    assert client.calls[3][1]["displacement_m"] == [None, 0.0, 0.001]
+    assert client.calls[3][1]["rotation_rad"] == [0.1, None, None]
     assert client.calls[3][1]["amplitude"] == client.calls[0][1]["amplitude"]
 
     with pytest.raises(ValidationError):

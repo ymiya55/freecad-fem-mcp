@@ -156,6 +156,13 @@ Boxは内側寸法が正になる肉厚を必要とします。beam/trussとshel
 CalculiXのM3D3 membrane要素は面圧`*DLOAD,P`を受け付けないため、membrane解析への`pressure`は
 `validate_analysis`で拒否します。曲げ剛性を持つshell解析ではFaceへのpressureを使用できます。
 
+beamの規定自由度は`add_boundary_condition(boundary_type="displacement")`で指定します。
+`displacement_m`と`rotation_rad`はいずれも3成分で、各成分の数値は拘束値、`null`は自由を表します。
+両方を同時に指定できますが、少なくとも1成分は数値でなければなりません。`rotation_rad`は1D beamを
+含む解析だけで許可され、3D solidだけの解析では事前検証で拒否されます。通常beamの最初の断面は
+native `BeamReducedIntegration=false`、Pipeは`true`へ安全に設定され、trussは
+`ExcludeBendingStiffness=true`の独立presetとして扱われます。
+
 TieとContactは`add_connection`を使い、`slave`と`master`へ実在するFaceを各1面指定します。
 Tieは`tolerance_m`と`adjust`が必須です。Contactはstatic・non-thermalに限定し、
 `surface_behavior`へ`hard`、`linear`、`tied`を指定します。Linear/Tiedでは正の

@@ -920,11 +920,19 @@ class AddBoundaryConditionRequest(_AmplitudeRequestModel):
             "uses the current FreeCAD GUI selection."
         ),
     )
-    displacement_m: Vector3 | None = Field(
+    displacement_m: RemoteDisplacementVector3 | None = Field(
         default=None,
         description=(
-            "Three prescribed displacement components in meters; required only "
-            "for boundary_type='displacement'."
+            "Three prescribed displacement components in meters; each component "
+            "may be null for Free and at least one component is required for "
+            "boundary_type='displacement'."
+        ),
+    )
+    rotation_rad: RemoteRotationVector3 | None = Field(
+        default=None,
+        description=(
+            "Optional three prescribed rotation components in radians for beam "
+            "boundaries; each component may be null for Free."
         ),
     )
     axis: Literal["x", "y", "z"] | None = Field(
@@ -946,20 +954,28 @@ class AddBoundaryConditionRequest(_AmplitudeRequestModel):
     @model_validator(mode="after")
     def validate_boundary_values(self) -> "AddBoundaryConditionRequest":
         if self.boundary_type == "fixed":
-            if self.displacement_m is not None:
-                raise ValueError("displacement_m is not valid for boundary_type='fixed'")
+            if self.displacement_m is not None or self.rotation_rad is not None:
+                raise ValueError("displacement_m/rotation_rad are not valid for boundary_type='fixed'")
             if self.amplitude is not None:
                 raise ValueError("amplitude is not valid for boundary_type='fixed'")
             if self.axis is not None or self.normal_m is not None:
                 raise ValueError("axis/normal_m are not valid for boundary_type='fixed'")
         elif self.boundary_type == "displacement":
-            if self.displacement_m is None:
-                raise ValueError("displacement_m is required for boundary_type='displacement'")
+            constrained = any(
+                component is not None
+                for vector in (self.displacement_m, self.rotation_rad)
+                if vector is not None
+                for component in vector
+            )
+            if not constrained:
+                raise ValueError(
+                    "displacement_m or rotation_rad must constrain a component"
+                )
             if self.axis is not None or self.normal_m is not None:
                 raise ValueError("axis/normal_m are not valid for boundary_type='displacement'")
         elif self.boundary_type == "roller":
-            if self.displacement_m is not None or self.amplitude is not None:
-                raise ValueError("roller supports do not accept displacement or amplitude")
+            if self.displacement_m is not None or self.rotation_rad is not None or self.amplitude is not None:
+                raise ValueError("displacement_m/rotation_rad are not valid for roller")
             if (self.axis is None) == (self.normal_m is None):
                 raise ValueError("roller requires exactly one of axis or normal_m")
             if self.normal_m is not None:
@@ -967,9 +983,9 @@ class AddBoundaryConditionRequest(_AmplitudeRequestModel):
                 if len(nonzero) != 1 or nonzero[0] != 1.0:
                     raise ValueError("normal_m must be an axis-aligned unit vector")
         else:
-            if self.displacement_m is not None or self.amplitude is not None:
+            if self.displacement_m is not None or self.rotation_rad is not None or self.amplitude is not None:
                 raise ValueError(
-                    "displacement/amplitude are not valid for boundary_type='{}'".format(
+                    "displacement_m/rotation_rad/amplitude are not valid for boundary_type='{}'".format(
                         self.boundary_type
                     )
                 )

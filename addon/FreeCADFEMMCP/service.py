@@ -1397,16 +1397,15 @@ class FEMService:
             raise ServiceError("boundary_type is unsupported")
         allowed = {
             "action", "document_id", "analysis_id", "targets", "boundary_type",
-            "axis", "normal_m",
+            "axis", "normal_m", "displacement_m", "rotation_rad", "amplitude",
         }
         required = {"action", "analysis_id", "boundary_type"}
         if boundary_type == "displacement":
-            allowed.add("displacement_m")
-            allowed.add("amplitude")
-            required.add("displacement_m")
             if "axis" in params or "normal_m" in params:
                 raise ServiceError("axis/normal_m are unsupported for displacement")
         elif boundary_type == "roller":
+            if any(key in params for key in ("displacement_m", "rotation_rad", "amplitude")):
+                raise ServiceError("displacement_m/rotation_rad/amplitude are unsupported for roller")
             has_axis = "axis" in params
             has_normal = "normal_m" in params
             if has_axis == has_normal:
@@ -1427,12 +1426,20 @@ class FEMService:
         if "targets" in params and not isinstance(params["targets"], list):
             raise ServiceError("targets must be a bounded list")
         if boundary_type == "displacement":
-            self._finite_vector(params["displacement_m"], "displacement_m", strict_numeric=True)
+            constrained = False
+            if "displacement_m" in params and params["displacement_m"] is not None:
+                vector = self._finite_optional_vector(params["displacement_m"], "displacement_m", 1e9)
+                constrained = constrained or any(component is not None for component in vector)
+            if "rotation_rad" in params and params["rotation_rad"] is not None:
+                vector = self._finite_optional_vector(params["rotation_rad"], "rotation_rad", 1e6)
+                constrained = constrained or any(component is not None for component in vector)
+            if not constrained:
+                raise ServiceError("displacement_m or rotation_rad must constrain a component")
             if "amplitude" in params:
                 self._validate_amplitude(params["amplitude"])
         elif boundary_type != "roller":
-            if "displacement_m" in params or "amplitude" in params:
-                raise ServiceError("displacement/amplitude are unsupported for this boundary type")
+            if "displacement_m" in params or "rotation_rad" in params or "amplitude" in params:
+                raise ServiceError("displacement_m/rotation_rad/amplitude are unsupported for this boundary type")
         return boundary_type
 
     def _validate_remote_load_request(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1639,8 +1646,21 @@ class FEMService:
                 data["gravity_acceleration"] = acceleration
                 data["gravity_direction"] = direction
             elif kind == "displacement":
-                displacement = self._finite_vector(params["displacement_m"], "displacement_m", strict_numeric=True)
-                data.update({"x": displacement[0], "y": displacement[1], "z": displacement[2], "xFree": False, "yFree": False, "zFree": False})
+                displacement = (
+                    self._finite_optional_vector(params["displacement_m"], "displacement_m", 1e9)
+                    if params.get("displacement_m") is not None
+                    else [None, None, None]
+                )
+                for axis, value in zip(("x", "y", "z"), displacement):
+                    data[axis] = value
+                    data[axis + "Free"] = value is None
+                if params.get("rotation_rad") is not None:
+                    rotation = self._finite_optional_vector(
+                        params["rotation_rad"], "rotation_rad", 1e6
+                    )
+                    for axis, value in zip(("rotx", "roty", "rotz"), rotation):
+                        data[axis] = value
+                        data[axis + "Free"] = value is None
             elif kind == "pin":
                 # Pin is a closed native preset.  The operation layer owns
                 # every displacement DOF; do not forward implementation

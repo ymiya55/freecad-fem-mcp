@@ -871,6 +871,38 @@ class FreeCADOperations:
         amplitude = data.pop("amplitude", None)
         if amplitude_present and kind not in {"force", "pressure", "displacement"}:
             raise OperationError("amplitude is unsupported for this constraint kind")
+        if kind == "displacement":
+            allowed = {
+                "name", "references", "refs",
+                "x", "y", "z", "xFree", "yFree", "zFree",
+                "rotx", "roty", "rotz", "rotxFree", "rotyFree", "rotzFree",
+            }
+            unknown = set(data) - allowed
+            if unknown:
+                raise OperationError(
+                    "unsupported displacement fields: {}".format(
+                        ", ".join(sorted(str(item) for item in unknown))
+                    )
+                )
+            rotation_fields = {
+                "rotx", "roty", "rotz", "rotxFree", "rotyFree", "rotzFree"
+            }
+            if rotation_fields.intersection(data):
+                has_beam_or_shell = bool(
+                    self._element_geometry_members(analysis_obj, "Fem::ElementGeometry1D")
+                    or self._element_geometry_members(analysis_obj, "Fem::ElementGeometry2D")
+                )
+                if not has_beam_or_shell:
+                    raise OperationError(
+                        "rotation constraints require beam or shell geometry"
+                    )
+                for axis in ("rotx", "roty", "rotz"):
+                    value_key = axis
+                    free_key = axis + "Free"
+                    if value_key in data and free_key not in data:
+                        raise OperationError("{} is required with {}".format(free_key, value_key))
+                    if free_key in data and value_key not in data and not bool(data[free_key]):
+                        raise OperationError("{} is required when {} is constrained".format(value_key, free_key))
         normalized_amplitude = self._normalize_amplitude(amplitude)
         name = _safe_name(data.pop("name", "Constraint_" + kind), "Constraint_" + kind)
         raw_references = data.pop("references", data.pop("refs", None))
@@ -921,20 +953,65 @@ class FreeCADOperations:
                 for axis in "xyz":
                     free_key, value_key = axis + "Free", axis
                     if free_key in data:
-                        setattr(obj, free_key, bool(data[free_key]))
+                        try:
+                            self._native_property_name(obj, free_key)
+                            setattr(obj, free_key, bool(data[free_key]))
+                        except Exception as exc:
+                            if isinstance(exc, OperationError):
+                                raise
+                            raise OperationError("native displacement property is unavailable: {}".format(free_key)) from exc
                     elif kind == "pin":
                         setattr(obj, free_key, False)
                     elif kind == "roller":
                         setattr(obj, free_key, axis != data["axis"])
-                    if value_key in data and not bool(data.get(free_key, False)):
+                    value = data.get(value_key)
+                    is_free = bool(data.get(free_key, False))
+                    if kind == "displacement" and value_key in data:
+                        if free_key not in data:
+                            raise OperationError("{} is required with {}".format(free_key, value_key))
+                        if is_free and value is not None:
+                            raise OperationError("{} must be null when {} is true".format(value_key, free_key))
+                        if not is_free and value is None:
+                            raise OperationError("{} is required when {} is false".format(value_key, free_key))
+                    if value_key in data and not is_free and value is not None:
                         # FreeCAD 1.1.x exposes displacement values as
                         # xDisplacement/yDisplacement/zDisplacement.  The
                         # service's internal x/y/z keys remain stable, but
                         # must not be assigned as native properties.
                         native_key = axis + "Displacement"
-                        setattr(obj, native_key, self._unit_value(data[value_key], "m", value_key))
+                        self._native_property_name(obj, native_key)
+                        numeric = _finite_number(value, value_key)
+                        if abs(numeric) > 1e9:
+                            raise OperationError("{} is outside the allowed range".format(value_key))
+                        setattr(obj, native_key, self._unit_value(value, "m", value_key))
                     elif kind in {"pin", "roller"} and not bool(getattr(obj, free_key, True)):
                         setattr(obj, axis + "Displacement", self._unit_value(0.0, "m", value_key))
+                if kind == "displacement":
+                    for axis in ("rotx", "roty", "rotz"):
+                        value_key, free_key = axis, axis + "Free"
+                        if value_key not in data and free_key not in data:
+                            continue
+                        try:
+                            self._native_property_name(obj, free_key)
+                            setattr(obj, free_key, bool(data[free_key]))
+                        except Exception as exc:
+                            if isinstance(exc, OperationError):
+                                raise
+                            raise OperationError("native rotation property is unavailable: {}".format(free_key)) from exc
+                        value = data.get(value_key)
+                        is_free = bool(data[free_key])
+                        if is_free and value is not None:
+                            raise OperationError("{} must be null when {} is true".format(value_key, free_key))
+                        if not is_free and value is None:
+                            raise OperationError("{} is required when {} is false".format(value_key, free_key))
+                        if not is_free:
+                            native_key = self._native_property_name(
+                                obj, axis[3:] + "Rotation", axis + "Displacement"
+                            )
+                            numeric = _finite_number(value, value_key)
+                            if abs(numeric) > 1e6:
+                                raise OperationError("{} is outside the allowed range".format(value_key))
+                            setattr(obj, native_key, self._unit_value(value, "rad", value_key))
                 # Native solid displacement constraints have rotational DOFs
                 # for beam/shell models.  Pin/roller presets leave those free;
                 # probe aliases instead of assuming the property exists on
@@ -1836,6 +1913,18 @@ class FreeCADOperations:
                 for field, native_name in property_map.items():
                     if field in section_fields:
                         self._element_geometry_property(obj, native_name, "{} m".format(data[field]), type_id="App::PropertyLength")
+                # CalculiX's reduced-integration B31R formulation does not
+                # reproduce the Euler--Bernoulli bending stiffness expected by
+                # the public beam contract.  Set full integration once for a
+                # new normal beam section; subsequent non-pipe sections keep
+                # whatever solver-global value an existing beam established.
+                if section_type not in {"pipe", "truss"} and not existing_beams:
+                    self._element_geometry_property(
+                        solver,
+                        "BeamReducedIntegration",
+                        False,
+                        type_id="App::PropertyBool",
+                    )
                 if section_type == "pipe":
                     self._element_geometry_property(
                         solver,
@@ -2150,6 +2239,8 @@ class FreeCADOperations:
                     return None
         if hasattr(candidate, "Value"):
             candidate = getattr(candidate, "Value")
+        if isinstance(candidate, str):
+            candidate = candidate.strip().split()[0] if candidate.strip() else candidate
         try:
             number = float(candidate)
         except (TypeError, ValueError, OverflowError):
@@ -2211,6 +2302,125 @@ class FreeCADOperations:
         offset = cls._native_geometry_scalar(getattr(item, "Offset", None))
         if offset is None or not -1.0 <= offset <= 1.0:
             diagnostics.append("element geometry {} has invalid offset".format(name))
+        return diagnostics
+
+    @classmethod
+    def _element_geometry_1d_diagnostics(cls, item: Any) -> list[str]:
+        """Validate native ElementGeometry1D section schema and Edge refs."""
+
+        name = cls._object_id(item) or "ElementGeometry1D"
+        diagnostics: list[str] = []
+        refs = cls._normalize_native_references(getattr(item, "References", None) or [])
+        if not refs:
+            diagnostics.append("element geometry {} requires explicit Edge references".format(name))
+        seen: set[tuple[str, str]] = set()
+        for index, reference in enumerate(refs, start=1):
+            if not isinstance(reference, (tuple, list)) or len(reference) != 2:
+                diagnostics.append("element geometry {} reference {} is malformed".format(name, index))
+                continue
+            obj, subelement = reference
+            if obj is None or not isinstance(subelement, str):
+                diagnostics.append("element geometry {} reference {} is empty".format(name, index))
+                continue
+            object_name = str(getattr(obj, "Name", getattr(obj, "Label", "")))
+            key = (object_name, subelement)
+            if key in seen:
+                diagnostics.append("element geometry {} references must be unique".format(name))
+            seen.add(key)
+            suffix = subelement[4:] if subelement.startswith("Edge") else ""
+            if (
+                not suffix
+                or not suffix.isascii()
+                or not suffix.isdigit()
+                or int(suffix) <= 0
+                or (len(suffix) > 1 and suffix.startswith("0"))
+            ):
+                diagnostics.append("element geometry {} requires Edge references".format(name))
+                continue
+            shape = getattr(obj, "Shape", None)
+            getter = getattr(shape, "getElement", None) if shape is not None else None
+            if not callable(getter):
+                diagnostics.append("element geometry {} reference {} has no Shape".format(name, index))
+                continue
+            try:
+                element = getter(subelement)
+            except Exception:
+                diagnostics.append("element geometry {} reference {} is stale".format(name, index))
+                continue
+            if element is None or str(getattr(element, "ShapeType", "")) != "Edge":
+                diagnostics.append("element geometry {} requires Edge references".format(name))
+
+        section = str(getattr(item, "SectionType", "")).strip().lower()
+        section_fields: dict[str, tuple[str, ...]] = {
+            "rectangular": ("RectWidth", "RectHeight"),
+            "circular": ("CircDiameter",),
+            "pipe": ("PipeDiameter", "PipeThickness"),
+            "elliptical": ("Axis1Length", "Axis2Length"),
+            "box": ("BoxWidth", "BoxHeight", "BoxT1", "BoxT2", "BoxT3", "BoxT4"),
+        }
+        truss_area = cls._native_geometry_scalar(getattr(item, "TrussArea", None), "m^2")
+        if getattr(item, "TrussArea", None) is not None and (
+            truss_area is None or not 0.0 < truss_area <= 1e6
+        ):
+            diagnostics.append("element geometry {} has invalid TrussArea".format(name))
+        if section in section_fields:
+            values: dict[str, float] = {}
+            for field in section_fields[section]:
+                value = cls._native_geometry_scalar(getattr(item, field, None), "m")
+                if value is None or not 0.0 < value <= 1e6:
+                    diagnostics.append("element geometry {} has invalid {}".format(name, field))
+                else:
+                    values[field] = value
+            if section == "pipe" and len(values) == 2 and 2.0 * values["PipeThickness"] >= values["PipeDiameter"]:
+                diagnostics.append("element geometry {} pipe thickness is inconsistent".format(name))
+            if section == "box" and len(values) == 6:
+                if values["BoxT1"] + values["BoxT3"] >= values["BoxHeight"] or values["BoxT2"] + values["BoxT4"] >= values["BoxWidth"]:
+                    diagnostics.append("element geometry {} box thickness is inconsistent".format(name))
+        else:
+            diagnostics.append("element geometry {} has invalid SectionType".format(name))
+        return diagnostics
+
+    @classmethod
+    def _element_rotation_1d_diagnostics(cls, item: Any) -> list[str]:
+        """Validate native ElementRotation1D references and angle."""
+
+        name = cls._object_id(item) or "ElementRotation1D"
+        diagnostics: list[str] = []
+        refs = cls._normalize_native_references(getattr(item, "References", None) or [])
+        if not refs:
+            diagnostics.append("element rotation {} requires explicit Edge references".format(name))
+        seen: set[tuple[str, str]] = set()
+        for reference in refs:
+            if not isinstance(reference, (tuple, list)) or len(reference) != 2:
+                diagnostics.append("element rotation {} reference is malformed".format(name))
+                continue
+            obj, subelement = reference
+            key = (str(getattr(obj, "Name", getattr(obj, "Label", ""))), str(subelement))
+            if key in seen:
+                diagnostics.append("element rotation {} references must be unique".format(name))
+            seen.add(key)
+            if not isinstance(subelement, str) or not subelement.startswith("Edge"):
+                diagnostics.append("element rotation {} requires Edge references".format(name))
+                continue
+            suffix = subelement[4:]
+            if not suffix or not suffix.isascii() or not suffix.isdigit() or int(suffix) <= 0 or (len(suffix) > 1 and suffix.startswith("0")):
+                diagnostics.append("element rotation {} requires Edge references".format(name))
+                continue
+            shape = getattr(obj, "Shape", None)
+            getter = getattr(shape, "getElement", None) if shape is not None else None
+            if not callable(getter):
+                diagnostics.append("element rotation {} reference has no Shape".format(name))
+                continue
+            try:
+                element = getter(subelement)
+            except Exception:
+                diagnostics.append("element rotation {} reference is stale".format(name))
+                continue
+            if element is None or str(getattr(element, "ShapeType", "")) != "Edge":
+                diagnostics.append("element rotation {} requires Edge references".format(name))
+        rotation = cls._native_geometry_scalar(getattr(item, "Rotation", None), "rad")
+        if rotation is None or not -1e6 <= rotation <= 1e6:
+            diagnostics.append("element rotation {} has invalid Rotation".format(name))
         return diagnostics
 
     @classmethod
@@ -2460,8 +2670,10 @@ class FreeCADOperations:
             diagnostics.append("analysis has no mesh")
         geometry_2d = self._element_geometry_members(analysis_obj, "Fem::ElementGeometry2D")
         geometry_1d = self._element_geometry_members(analysis_obj, "Fem::ElementGeometry1D")
+        rotation_1d = self._element_geometry_members(analysis_obj, "Fem::ElementRotation1D")
         element_dimension = getattr(mesh, "ElementDimension", None) if mesh is not None else None
         shell_mode = bool(geometry_2d) or element_dimension == "2D"
+        beam_mode = bool(geometry_1d or rotation_1d) or element_dimension == "1D"
         if shell_mode:
             if mesh is None:
                 diagnostics.append("analysis requires a 2D mesh")
@@ -2494,6 +2706,34 @@ class FreeCADOperations:
                     diagnostics.append(
                         "membrane formulation does not support ConstraintPressure"
                     )
+        if beam_mode:
+            if mesh is None:
+                diagnostics.append("analysis requires a 1D mesh")
+            elif element_dimension != "1D":
+                diagnostics.append("analysis requires a 1D mesh (ElementDimension=1D)")
+            material_members = [
+                item
+                for item in members
+                if "material" in (self.fem_type(item) + " " + str(getattr(item, "TypeId", ""))).lower()
+            ]
+            if not material_members:
+                diagnostics.append("analysis has no material")
+            if not geometry_1d:
+                diagnostics.append("analysis has no ElementGeometry1D beam section")
+            for geometry in geometry_1d:
+                diagnostics.extend(self._element_geometry_1d_diagnostics(geometry))
+            for rotation in rotation_1d:
+                diagnostics.extend(self._element_rotation_1d_diagnostics(rotation))
+            if solver is None or not hasattr(solver, "ExcludeBendingStiffness"):
+                diagnostics.append("solver formulation is unavailable for beam geometry")
+            else:
+                exclusion = getattr(solver, "ExcludeBendingStiffness", None)
+                if not isinstance(exclusion, bool):
+                    diagnostics.append("solver formulation is invalid for beam geometry")
+                # ExcludeBendingStiffness is solver-global and authoritative:
+                # true means every beam section is emitted as a truss, while
+                # false means normal beam bending is retained.  Assignment
+                # rejects mixed sections before this validator runs.
         if solver is not None and mesh is not None and _checksanalysis is not None and _membertools is not None:
             try:
                 member = _membertools.AnalysisMember(analysis_obj)

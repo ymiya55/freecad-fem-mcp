@@ -301,6 +301,14 @@ def test_boundary_condition_values_are_type_specific() -> None:
         displacement_m=[0.0, 0.001, 0.0],
     )
     assert displacement.displacement_m == [0.0, 0.001, 0.0]
+    beam_displacement = AddBoundaryConditionRequest(
+        analysis_id="Analysis",
+        boundary_type="displacement",
+        displacement_m=[None, 0.001, None],
+        rotation_rad=[0.0, None, None],
+    )
+    assert beam_displacement.displacement_m == [None, 0.001, None]
+    assert beam_displacement.rotation_rad == [0.0, None, None]
 
     with pytest.raises(ValidationError):
         AddBoundaryConditionRequest(
@@ -314,6 +322,13 @@ def test_boundary_condition_values_are_type_specific() -> None:
         AddBoundaryConditionRequest(
             analysis_id="Analysis",
             boundary_type="displacement",
+            displacement_m=[None, None, None],
+            rotation_rad=[None, None, None],
+        )
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(
+            analysis_id="Analysis",
+            boundary_type="displacement",
             displacement_m=[0.0, 0.0],
         )
     with pytest.raises(ValidationError):
@@ -321,6 +336,12 @@ def test_boundary_condition_values_are_type_specific() -> None:
             analysis_id="Analysis",
             boundary_type="displacement",
             displacement_m=[0.0, math.inf, 0.0],
+        )
+    with pytest.raises(ValidationError):
+        AddBoundaryConditionRequest(
+            analysis_id="Analysis",
+            boundary_type="fixed",
+            rotation_rad=[0.0, 0.0, 0.0],
         )
 
 
