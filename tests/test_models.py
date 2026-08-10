@@ -19,6 +19,7 @@ from freecad_fem_mcp.models import (
     MaterialRequest,
     MeshRequest,
     StatusRequest,
+    SetVisibilityRequest,
     ViewRequest,
 )
 
@@ -33,6 +34,25 @@ def test_models_reject_non_finite_values() -> None:
         ViewRequest(fit_margin=math.nan)
     with pytest.raises(ValidationError):
         MaterialRequest(youngs_modulus_pa=math.inf)
+
+
+def test_visibility_request_has_closed_conditional_targets() -> None:
+    request = SetVisibilityRequest(mode="isolate", object_names=["MeshGmsh"])
+    assert request.object_names == ["MeshGmsh"]
+    assert SetVisibilityRequest(mode="show_all").object_names == []
+
+    invalid = (
+        {"mode": "isolate"},
+        {"mode": "show", "object_names": []},
+        {"mode": "hide_all", "object_names": ["MeshGmsh"]},
+        {"mode": "show", "object_names": ["MeshGmsh", "MeshGmsh"]},
+        {"mode": "show", "object_names": [""]},
+        {"mode": "toggle", "object_names": ["MeshGmsh"]},
+        {"mode": "show", "object_names": ["MeshGmsh"], "property": "Visibility"},
+    )
+    for params in invalid:
+        with pytest.raises(ValidationError):
+            SetVisibilityRequest(**params)
 
 
 def test_analysis_variants_require_matching_solver_controls() -> None:

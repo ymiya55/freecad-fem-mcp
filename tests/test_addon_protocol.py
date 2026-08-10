@@ -484,6 +484,131 @@ def test_document_revision_is_exposed_for_safe_overwrite() -> None:
         service(Request(1, "status", {"action": "get", "document_id": "Other"}))
 
 
+def test_visibility_route_isolates_tree_objects_and_reports_current_state() -> None:
+    class _ViewObject:
+        def __init__(self, visible: bool):
+            self.Visibility = visible
+
+    class _Object:
+        def __init__(self, name: str, visible: bool):
+            self.Name = self.Label = name
+            self.TypeId = "App::FeaturePython"
+            self.ViewObject = _ViewObject(visible)
+
+    mesh = _Object("MeshGmsh", False)
+    shape = _Object("Body", True)
+    result = _Object("Results", True)
+
+    class _Doc:
+        Name = "ReportDoc"
+        Label = "ReportDoc"
+        FileName = ""
+        Objects = [shape, mesh, result]
+
+    class _App:
+        ActiveDocument = _Doc()
+
+        @staticmethod
+        def Version():
+            return ("1", "1", "3")
+
+    operations = FreeCADOperations(app=_App())
+    service = FEMService(operations=operations, jobs=object(), pipeline=object())
+    response = service(Request(40, "view", {
+        "action": "visibility",
+        "document_id": "ReportDoc",
+        "mode": "isolate",
+        "object_names": ["MeshGmsh"],
+    }))
+
+    assert mesh.ViewObject.Visibility is True
+    assert shape.ViewObject.Visibility is False
+    assert result.ViewObject.Visibility is False
+    assert response == {
+        "mode": "isolate",
+        "object_names": ["MeshGmsh"],
+        "changed_count": 3,
+        "visible_count": 1,
+        "hidden_count": 2,
+    }
+    inspected = operations.active_document()
+    assert {item["name"]: item["visible"] for item in inspected["objects"]} == {
+        "Body": False,
+        "MeshGmsh": True,
+        "Results": False,
+    }
+
+
+def test_visibility_route_rejects_invalid_targets_before_mutation_and_rolls_back() -> None:
+    class _ViewObject:
+        def __init__(self, visible: bool, fail_when_hidden: bool = False):
+            self._visible = visible
+            self.fail_when_hidden = fail_when_hidden
+
+        @property
+        def Visibility(self):
+            return self._visible
+
+        @Visibility.setter
+        def Visibility(self, value):
+            if value is False and self.fail_when_hidden:
+                raise RuntimeError("simulated GUI failure")
+            self._visible = value
+
+    target = type("Obj", (), {
+        "Name": "Target", "Label": "Target", "TypeId": "App::FeaturePython",
+        "ViewObject": _ViewObject(False),
+    })()
+    blocker = type("Obj", (), {
+        "Name": "Blocker", "Label": "Blocker", "TypeId": "App::FeaturePython",
+        "ViewObject": _ViewObject(True, fail_when_hidden=True),
+    })()
+
+    class _Doc:
+        Name = "RollbackDoc"
+        Objects = [target, blocker]
+
+    class _App:
+        ActiveDocument = _Doc()
+
+        @staticmethod
+        def Version():
+            return ("1", "1", "3")
+
+    service = FEMService(
+        operations=FreeCADOperations(app=_App()), jobs=object(), pipeline=object()
+    )
+    with pytest.raises(ServiceError, match="not found"):
+        service(Request(41, "view", {
+            "action": "visibility", "mode": "show", "object_names": ["Missing"],
+        }))
+    assert target.ViewObject.Visibility is False
+    assert blocker.ViewObject.Visibility is True
+
+    with pytest.raises(ServiceError, match="rolled back"):
+        service(Request(42, "view", {
+            "action": "visibility", "mode": "isolate", "object_names": ["Target"],
+        }))
+    assert target.ViewObject.Visibility is False
+    assert blocker.ViewObject.Visibility is True
+
+
+@pytest.mark.parametrize(
+    "params",
+    (
+        {"action": "visibility", "mode": "show", "object_names": []},
+        {"action": "visibility", "mode": "show_all", "object_names": ["Body"]},
+        {"action": "visibility", "mode": "show", "object_names": ["Body", "Body"]},
+        {"action": "visibility", "mode": "toggle", "object_names": ["Body"]},
+        {"action": "visibility", "mode": "show", "object_names": ["Body"], "property": "Visibility"},
+    ),
+)
+def test_visibility_route_rejects_unbounded_or_native_property_shapes(params) -> None:
+    service = FEMService(operations=object(), jobs=object(), pipeline=object())
+    with pytest.raises(ServiceError):
+        service(Request(43, "view", params))
+
+
 def test_gmsh_element_order_is_native_enum() -> None:
     class _Obj:
         def __init__(self, name, type_id):

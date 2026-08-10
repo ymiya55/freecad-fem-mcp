@@ -22,6 +22,7 @@ def test_fixed_tool_surface_has_no_generic_escape_hatches() -> None:
         "inspect_document",
         "get_selection",
         "set_view",
+        "set_visibility",
         "capture_gui",
         "open_model",
         "save_document",
@@ -157,6 +158,7 @@ def test_create_analysis_variants_keep_one_tool_and_forward_controls() -> None:
 
 def test_element_geometry_tool_forwards_fixed_route_and_closed_variants() -> None:
     assert PUBLIC_TOOL_ACTIONS["assign_element_geometry"] == ("element_geometry", "assign")
+    assert PUBLIC_TOOL_ACTIONS["set_visibility"] == ("view", "visibility")
 
     client = FakeClient()
     app = create_server(client)

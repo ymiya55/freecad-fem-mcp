@@ -193,7 +193,16 @@ class FreeCADOperations:
         doc = self._document()
         objects = []
         for obj in (getattr(doc, "Objects", []) or [])[:512]:
-            objects.append({"name": getattr(obj, "Name", ""), "label": getattr(obj, "Label", ""), "type": getattr(obj, "TypeId", "")})
+            view_object = getattr(obj, "ViewObject", None)
+            visible = None
+            if view_object is not None and hasattr(view_object, "Visibility"):
+                visible = bool(getattr(view_object, "Visibility"))
+            objects.append({
+                "name": getattr(obj, "Name", ""),
+                "label": getattr(obj, "Label", ""),
+                "type": getattr(obj, "TypeId", ""),
+                "visible": visible,
+            })
         return {"name": getattr(doc, "Name", ""), "label": getattr(doc, "Label", ""), "file": getattr(doc, "FileName", ""), "revision": str(self._revisions.get(id(doc), 0)), "objects": objects}
 
     def _document_path(self, path: Any) -> Path:

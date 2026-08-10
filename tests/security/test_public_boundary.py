@@ -2701,6 +2701,7 @@ _ROUTE_CASES: tuple[tuple[tuple[str, str], dict[str, object]], ...] = (
     (("document", "active"), {"action": "active"}),
     (("selection", "get"), {"action": "get"}),
     (("view", "set"), {"action": "set"}),
+    (("view", "visibility"), {"action": "visibility", "mode": "show_all"}),
     (("capture", "capture"), {"action": "capture", "scope": "viewport"}),
     (("open", "open"), {"action": "open", "path": "model.FCStd"}),
     (("save", "save"), {"action": "save"}),
@@ -2785,7 +2786,10 @@ def test_addon_status_advertises_all_analysis_types_and_route_parity() -> None:
         "frequency",
         "buckling",
     }
-    assert len(_ROUTE_CASES) == 24
+    assert status["capabilities"]["visibility_modes"] == [
+        "show", "hide", "isolate", "show_all", "hide_all",
+    ]
+    assert len(_ROUTE_CASES) == len(PUBLIC_TOOL_ACTIONS)
     assert {pair for pair, _base in _ROUTE_CASES} == set(PUBLIC_TOOL_ACTIONS.values())
 
 

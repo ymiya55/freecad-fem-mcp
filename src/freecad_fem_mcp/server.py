@@ -80,6 +80,7 @@ from .models import (
     RemoteRotationVector3,
     TransformRotationVector3,
     SaveDocumentRequest,
+    SetVisibilityRequest,
     SetViewRequest,
     ShowResultRequest,
     StartAnalysisRequest,
@@ -94,6 +95,7 @@ TOOL_NAMES = (
     "inspect_document",
     "get_selection",
     "set_view",
+    "set_visibility",
     "capture_gui",
     "open_model",
     "save_document",
@@ -121,6 +123,7 @@ PUBLIC_TOOL_ACTIONS = {
     "inspect_document": ("document", "active"),
     "get_selection": ("selection", "get"),
     "set_view": ("view", "set"),
+    "set_visibility": ("view", "visibility"),
     "capture_gui": ("capture", "capture"),
     "open_model": ("open", "open"),
     "save_document": ("save", "save"),
@@ -319,6 +322,25 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             fit=fit,
         )
         return await invoke("view", "set", request)
+
+    @app.tool(
+        name="set_visibility",
+        description=(
+            "Show, hide, or isolate bounded FreeCAD tree objects for GUI review and capture."
+        ),
+        annotations=ann(readonly=False, destructive=False, idempotent=True),
+    )
+    async def set_visibility(
+        mode: Literal["show", "hide", "isolate", "show_all", "hide_all"],
+        object_names: Annotated[list[BoundedText], Field(max_length=256)] | None = None,
+        document_id: BoundedText | None = None,
+    ) -> Any:
+        request = SetVisibilityRequest(
+            document_id=document_id,
+            mode=mode,
+            object_names=[] if object_names is None else object_names,
+        )
+        return await invoke("view", "visibility", request)
 
     @app.tool(
         name="capture_gui",

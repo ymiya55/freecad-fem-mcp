@@ -622,6 +622,32 @@ class SetViewRequest(StrictModel):
     fit: StrictBool = False
 
 
+class SetVisibilityRequest(StrictModel):
+    """Change only bounded FreeCAD tree-object visibility.
+
+    Object names are stable document identifiers returned by
+    ``inspect_document``.  Global modes deliberately reject a target list,
+    while targeted modes require one, keeping every call unambiguous.
+    """
+
+    document_id: BoundedText | None = None
+    mode: Literal["show", "hide", "isolate", "show_all", "hide_all"]
+    object_names: Annotated[list[BoundedText], Field(max_length=256)] = Field(
+        default_factory=list
+    )
+
+    @model_validator(mode="after")
+    def validate_visibility_targets(self) -> "SetVisibilityRequest":
+        targeted = self.mode in {"show", "hide", "isolate"}
+        if targeted and not self.object_names:
+            raise ValueError("object_names is required for targeted visibility modes")
+        if not targeted and self.object_names:
+            raise ValueError("object_names is not accepted for global visibility modes")
+        if len(set(self.object_names)) != len(self.object_names):
+            raise ValueError("object_names must not contain duplicates")
+        return self
+
+
 class CaptureGuiRequest(CaptureRequest):
     scope: Literal["viewport", "window"] = "viewport"
 
@@ -1489,6 +1515,7 @@ PUBLIC_REQUEST_MODELS: dict[str, type[StrictModel]] = {
     "inspect_document": InspectDocumentRequest,
     "get_selection": GetSelectionRequest,
     "set_view": SetViewRequest,
+    "set_visibility": SetVisibilityRequest,
     "capture_gui": CaptureGuiRequest,
     "open_model": OpenModelRequest,
     "save_document": SaveDocumentRequest,
@@ -1532,6 +1559,7 @@ GetStatusInput = GetStatusParams = GetStatusRequest
 InspectDocumentInput = InspectDocumentParams = InspectDocumentRequest
 GetSelectionInput = GetSelectionParams = GetSelectionRequest
 SetViewInput = SetViewParams = SetViewRequest
+SetVisibilityInput = SetVisibilityParams = SetVisibilityRequest
 CaptureGuiInput = CaptureGuiParams = CaptureGuiRequest
 OpenModelInput = OpenModelParams = OpenModelRequest
 SaveDocumentInput = SaveDocumentParams = SaveDocumentRequest
@@ -1573,6 +1601,9 @@ __all__ = [
     "SetViewRequest",
     "SetViewInput",
     "SetViewParams",
+    "SetVisibilityRequest",
+    "SetVisibilityInput",
+    "SetVisibilityParams",
     "CaptureGuiRequest",
     "CaptureGuiInput",
     "CaptureGuiParams",

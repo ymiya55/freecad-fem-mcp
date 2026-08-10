@@ -42,6 +42,10 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
     ("document", "active"): ({"action", "document_id"}, {"action"}),
     ("selection", "get"): ({"action", "document_id"}, {"action"}),
     ("view", "set"): ({"action", "document_id", "orientation", "fit"}, {"action"}),
+    ("view", "visibility"): (
+        {"action", "document_id", "mode", "object_names"},
+        {"action", "mode"},
+    ),
     ("capture", "capture"): (
         {"action", "document_id", "width", "height", "image_format", "scope"},
         {"action", "scope"},
@@ -300,7 +304,7 @@ class FEMService:
             return
         if method == "status":
             return
-        if method == "view":
+        if method == "view" and action == "set":
             cls._optional_text(params, "orientation", maximum=32)
             if "orientation" in params and params["orientation"] not in {
                 "front", "rear", "left", "right", "top", "bottom", "isometric"
@@ -308,6 +312,29 @@ class FEMService:
                 raise ServiceError("orientation is unsupported")
             if "fit" in params:
                 cls._strict_bool(params["fit"], "fit")
+            return
+        if method == "view" and action == "visibility":
+            mode = params.get("mode")
+            if mode not in {"show", "hide", "isolate", "show_all", "hide_all"}:
+                raise ServiceError("visibility mode is unsupported")
+            names = params.get("object_names", [])
+            if not isinstance(names, list) or len(names) > 256:
+                raise ServiceError("object_names is invalid")
+            if any(
+                not isinstance(name, str)
+                or not name.strip()
+                or len(name) > 256
+                or "\x00" in name
+                for name in names
+            ):
+                raise ServiceError("object_names is invalid")
+            if len(set(names)) != len(names):
+                raise ServiceError("object_names must not contain duplicates")
+            targeted = mode in {"show", "hide", "isolate"}
+            if targeted and not names:
+                raise ServiceError("object_names is required for targeted visibility modes")
+            if not targeted and names:
+                raise ServiceError("object_names is not accepted for global visibility modes")
             return
         if method == "capture":
             cls._strict_int(params.get("width", 1280), "width", 16, 8192)
@@ -1025,6 +1052,7 @@ class FEMService:
                     },
                     "mpc_types": ["plane_rotation"],
                     "result_kinds": ["displacement", "stress", "strain", "von_mises"],
+                    "visibility_modes": ["show", "hide", "isolate", "show_all", "hide_all"],
                     "element_dimensions": ["1d", "2d", "3d"],
                     "element_geometry": {
                         "shell": {
@@ -1061,9 +1089,13 @@ class FEMService:
             return self.selection.capture()
 
         if method == "view":
-            self._action(params, "set")
-            self._set_view(params)
-            return {"set": True}
+            action = params.get("action")
+            if action == "set":
+                self._set_view(params)
+                return {"set": True}
+            if action == "visibility":
+                return self._set_visibility(params)
+            raise ServiceError("unsupported action")
 
         if method == "capture":
             self._action(params, "capture")
@@ -1966,3 +1998,80 @@ class FEMService:
             fit = getattr(view, "fitAll", None)
             if callable(fit):
                 fit()
+
+    def _set_visibility(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply a bounded, atomic GUI visibility change to document objects."""
+
+        try:
+            doc = self.operations._document()
+        except Exception as exc:
+            raise ServiceError("an active document is required") from exc
+        document_id = params.get("document_id")
+        if document_id is not None and document_id != getattr(doc, "Name", None):
+            raise ServiceError("document_id does not identify the active document")
+
+        objects = list(getattr(doc, "Objects", []) or [])
+        if len(objects) > 4096:
+            raise ServiceError("document has too many objects for visibility control")
+        by_name = {
+            str(getattr(obj, "Name", "")): obj
+            for obj in objects
+            if getattr(obj, "Name", None)
+        }
+        names = list(params.get("object_names", []))
+        missing = [name for name in names if name not in by_name]
+        if missing:
+            raise ServiceError("visibility object was not found")
+
+        mode = params["mode"]
+        requested = set(names)
+        targeted = mode in {"show", "hide"}
+        candidates = [by_name[name] for name in names] if targeted else objects
+        entries: list[tuple[Any, bool, bool]] = []
+        for obj in candidates:
+            view_object = getattr(obj, "ViewObject", None)
+            if view_object is None or not hasattr(view_object, "Visibility"):
+                if targeted or str(getattr(obj, "Name", "")) in requested:
+                    raise ServiceError("object does not expose GUI visibility")
+                continue
+            previous = bool(getattr(view_object, "Visibility"))
+            if mode == "show":
+                desired = True
+            elif mode == "hide":
+                desired = False
+            elif mode == "isolate":
+                desired = str(getattr(obj, "Name", "")) in requested
+            else:
+                desired = mode == "show_all"
+            entries.append((view_object, previous, desired))
+
+        if not entries:
+            raise ServiceError("no GUI-visible objects are available")
+        changed: list[tuple[Any, bool]] = []
+        try:
+            for view_object, previous, desired in entries:
+                if previous != desired:
+                    setattr(view_object, "Visibility", desired)
+                    changed.append((view_object, previous))
+        except Exception as exc:
+            for view_object, previous in reversed(changed):
+                try:
+                    setattr(view_object, "Visibility", previous)
+                except Exception:
+                    pass
+            raise ServiceError("visibility change failed and was rolled back") from exc
+
+        all_visual = [
+            getattr(obj, "ViewObject", None)
+            for obj in objects
+            if getattr(obj, "ViewObject", None) is not None
+            and hasattr(getattr(obj, "ViewObject", None), "Visibility")
+        ]
+        visible_count = sum(bool(getattr(view_object, "Visibility")) for view_object in all_visual)
+        return {
+            "mode": mode,
+            "object_names": names,
+            "changed_count": len(changed),
+            "visible_count": visible_count,
+            "hidden_count": len(all_visual) - visible_count,
+        }
