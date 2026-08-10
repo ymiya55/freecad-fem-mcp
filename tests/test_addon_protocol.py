@@ -511,6 +511,10 @@ def test_typed_load_and_boundary_routes_use_native_constraint_kinds() -> None:
             self.calls.append((analysis, kind, params))
             return {"name": "Native_" + kind}
 
+        def set_material(self, analysis, params):
+            self.calls.append((analysis, "material", params))
+            return {"name": "NativeMaterial"}
+
     operations = _Operations()
     service = FEMService(operations=operations, selection=_Selection())
     target = [{"object_name": "Beam", "subelements": ["Face1"]}]
@@ -543,6 +547,48 @@ def test_typed_load_and_boundary_routes_use_native_constraint_kinds() -> None:
     assert operations.calls[-1][2]["xFree"] is True
     assert operations.calls[-1][2]["rotxFree"] is False
     assert operations.calls[-1][2]["rotx"] == 0.1
+
+    transformed = service(Request(32, "constraint", {
+        "action": "add", "analysis_id": "Analysis", "constraint_type": "transform",
+        "targets": [{"object_name": "Beam", "subelements": ["Edge1"]}],
+        "transform_type": "rectangular",
+        "rotation_rad": [0.0, 0.0, 0.5],
+    }))
+    assert transformed["constraint_id"] == "Native_transform"
+    assert operations.calls[-1][1] == "transform"
+    assert operations.calls[-1][2]["transform_type"] == "rectangular"
+    assert operations.calls[-1][2]["rotation_rad"] == [0.0, 0.0, 0.5]
+
+    material = service(Request(33, "material", {
+        "action": "assign", "analysis_id": "Analysis",
+        "targets": [{"object_name": "Beam", "subelements": ["Edge1"]}],
+        "youngs_modulus_pa": 210e9,
+    }))
+    assert material["material_id"] == "NativeMaterial"
+    assert operations.calls[-1][1] == "material"
+    assert operations.calls[-1][2] == {
+        "targets": [{"object_name": "Beam", "subelements": ["Edge1"]}],
+        "youngs_modulus_pa": 210e9,
+    }
+
+    aliased_material = service(Request(36, "material", {
+        "action": "assign", "analysis_id": "Analysis", "material_id": "LegacyMaterial",
+    }))
+    assert aliased_material["material_id"] == "NativeMaterial"
+    assert operations.calls[-1][2] == {"name": "LegacyMaterial"}
+
+    with pytest.raises(ServiceError):
+        service(Request(34, "material", {
+            "action": "assign", "analysis_id": "Analysis",
+            "targets": [{"object_name": "Beam", "subelements": [1]}],
+        }))
+    with pytest.raises(ServiceError):
+        service(Request(35, "constraint", {
+            "action": "add", "analysis_id": "Analysis", "constraint_type": "transform",
+            "targets": [{"object_name": "Beam", "subelements": ["Edge1"]}],
+            "transform_type": "cylindrical", "base_point_m": [0.0, 0.0, 0.0],
+            "axis_m": [0.0, 0.0, 0.0],
+        }))
 
     service(Request(31, "boundary_condition", {
         "action": "add", "analysis_id": "Analysis", "boundary_type": "displacement",

@@ -344,6 +344,14 @@ beam Edge／shell Faceごとの複数材料割当を追加します。同様に�
 安全に表現でき、新solver frameworkでwriter smokeと数値試験に合格したpresetだけを追加します。
 これはbeam end releaseの代替にはしません。真のconnector/beam releaseはR6 future gateのままです。
 
+**R7.4完了:** `MaterialSolid.References`とCalculiXのmaterial/geometry groupingをFreeCAD 1.1.3実機で
+確認し、`assign_material.targets`によるbeam Edge／shell Faceなどへの複数材料割当を追加しました。
+global材料との混在、重複、stale参照、複数材料使用時の未割当領域を実行前に診断します。
+`ConstraintTransform`はnative factoryとwriterが確認できたRectangular／Cylindricalだけを公開し、
+Rectangularは回転ベクトルのみ、CylindricalはSIの基点と非ゼロ軸だけを受け付けます。実機smokeで
+複数beam／shell材料参照と、両presetの`*NSET`／`*TRANSFORM`出力を確認しました。native writerが
+Rectangularの基点を使用しないため、その入力は意図的に公開していません。
+
 #### R7.5: Shell tie/contactと結果契約
 
 既存`add_connection`をshell Face-to-Faceへ拡張します。FreeCAD 1.1.x native writerで確認できるtieと

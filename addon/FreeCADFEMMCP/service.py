@@ -74,6 +74,7 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
     ("material", "assign"): (
         {
             "action", "document_id", "analysis_id", "material_id", "name",
+            "targets",
             "youngs_modulus_pa", "poisson_ratio", "density_kg_m3", "yield_strength_pa",
             "hardening_model", "yield_points",
         },
@@ -288,6 +289,7 @@ class FEMService:
             cls._require_identifier(params, "analysis_id")
             cls._optional_text(params, "material_id")
             cls._optional_text(params, "name")
+            cls._validate_material_targets(params)
             cls._optional_finite(params, "youngs_modulus_pa", positive=True)
             cls._optional_finite(params, "poisson_ratio")
             if "poisson_ratio" in params and params["poisson_ratio"] is not None and not -1.0 < params["poisson_ratio"] < 0.5:
@@ -442,6 +444,63 @@ class FEMService:
                 raise ServiceError("box wall thicknesses must fit inside box dimensions")
             if float(params["box_t2_m"]) + float(params["box_t4_m"]) >= float(params["box_width_m"]):
                 raise ServiceError("box wall thicknesses must fit inside box dimensions")
+
+    @classmethod
+    def _validate_material_targets(cls, params: Mapping[str, Any]) -> None:
+        targets = params.get("targets")
+        if targets is None:
+            return
+        if not isinstance(targets, list) or len(targets) > 128:
+            raise ServiceError("material targets must be a bounded list")
+        seen: set[tuple[str, str]] = set()
+        for target in targets:
+            if not isinstance(target, Mapping) or set(target) != {"object_name", "subelements"}:
+                raise ServiceError("material target must contain exactly object_name and subelements")
+            object_name = target.get("object_name")
+            if (
+                not isinstance(object_name, str)
+                or not object_name.strip()
+                or len(object_name) > 256
+                or "\x00" in object_name
+                or any(ord(char) < 0x20 for char in object_name)
+            ):
+                raise ServiceError("material target object_name is invalid")
+            subelements = target.get("subelements")
+            if not isinstance(subelements, list) or len(subelements) > 64:
+                raise ServiceError("material target subelements are invalid")
+            if not subelements:
+                subelements = [""]
+            for subelement in subelements:
+                if not isinstance(subelement, str):
+                    raise ServiceError("material targets must use VertexN, EdgeN, FaceN, or SolidN")
+                if subelement:
+                    prefix = next(
+                        (candidate for candidate in ("Vertex", "Edge", "Face", "Solid") if subelement.startswith(candidate)),
+                        None,
+                    )
+                    if prefix is None:
+                        raise ServiceError("material targets must use VertexN, EdgeN, FaceN, or SolidN")
+                    suffix = subelement[len(prefix):]
+                    if (
+                        not suffix
+                        or not suffix.isascii()
+                        or not suffix.isdigit()
+                        or int(suffix) <= 0
+                        or (len(suffix) > 1 and suffix.startswith("0"))
+                    ):
+                        raise ServiceError("material targets must use VertexN, EdgeN, FaceN, or SolidN")
+                elif len(subelements) != 1:
+                    raise ServiceError("whole-object material target cannot be combined with subelements")
+                key = (object_name, subelement)
+                if key in seen:
+                    raise ServiceError("material targets must be unique")
+                seen.add(key)
+        for object_name, subelement in seen:
+            if subelement == "" and any(
+                other_object == object_name and other_subelement
+                for other_object, other_subelement in seen
+            ):
+                raise ServiceError("whole-object material target cannot be combined with subelements")
 
     @classmethod
     def _validate_analysis_options(cls, params: Mapping[str, Any]) -> None:
@@ -779,13 +838,14 @@ class FEMService:
             "action", "document_id", "analysis_id", "constraint_id", "constraint_type",
             "targets", "displacement_m", "force_n", "pressure_pa",
             "selfweight_acceleration_m_s2", "object_name", "subelements",
+            "transform_type", "base_point_m", "axis_m", "rotation_rad",
         }
         self._validate_fields(params, allowed, {"action", "analysis_id", "constraint_type"})
         self._require_identifier(params, "analysis_id")
         if "document_id" in params:
             self._require_identifier(params, "document_id")
         if params["constraint_type"] not in {
-            "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation"
+            "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation", "transform"
         }:
             raise ServiceError("constraint_type is unsupported")
         if "constraint_id" in params and params["constraint_id"] is not None:
@@ -821,6 +881,37 @@ class FEMService:
             )
         ):
             raise ServiceError("value fields are unsupported for plane_rotation")
+        if params["constraint_type"] == "transform":
+            targets = params.get("targets")
+            if not isinstance(targets, list) or not targets:
+                raise ServiceError("transform requires explicit targets")
+            if params.get("transform_type") not in {"rectangular", "cylindrical"}:
+                raise ServiceError("transform_type is unsupported")
+            for key in ("base_point_m", "axis_m", "rotation_rad"):
+                if key in params and params[key] is not None:
+                    vector = self._finite_vector(params[key], key, strict_numeric=True)
+                    if any(abs(component) > 1e9 for component in vector):
+                        raise ServiceError("{} is outside the allowed range".format(key))
+            transform_type = params["transform_type"]
+            if transform_type == "rectangular":
+                if "base_point_m" in params or params.get("rotation_rad") is None or "axis_m" in params:
+                    raise ServiceError("rectangular transform requires rotation_rad only")
+                if any(abs(component) > 1e6 for component in params["rotation_rad"]):
+                    raise ServiceError("rotation_rad is outside the allowed range")
+            else:
+                if params.get("base_point_m") is None or params.get("axis_m") is None or params.get("rotation_rad") is not None:
+                    raise ServiceError("cylindrical transform requires base_point_m and axis_m only")
+                axis = self._finite_vector(params["axis_m"], "axis_m", strict_numeric=True)
+                if math.sqrt(sum(component * component for component in axis)) <= 0.0:
+                    raise ServiceError("axis_m must have a non-zero norm")
+            if any(
+                key in params and params[key] not in (None, [], ())
+                for key in (
+                    "displacement_m", "force_n", "pressure_pa", "selfweight_acceleration_m_s2",
+                )
+            ):
+                raise ServiceError("value fields are unsupported for transform")
+            self._validate_material_targets({"targets": targets})
 
     def __call__(self, request: Request) -> Any:
         params = request.params
@@ -870,6 +961,16 @@ class FEMService:
                             "section_types": ["rectangular", "circular", "pipe", "elliptical", "box", "truss"],
                         },
                         "beam_rotation": {"references": "Edge", "fields": ["rotation_rad"]},
+                    },
+                    "material_assignment": {
+                        "references": "Vertex|Edge|Face|Solid",
+                        "multiple_regions": True,
+                        "global_without_references": True,
+                    },
+                    "constraint_transform": {
+                        "transform_types": ["rectangular", "cylindrical"],
+                        "references": "Vertex|Edge|Face|Solid",
+                        "rectangular_rotation": "axis-angle-radians",
                     },
                     "future_gates": list(_R6_FUTURE_GATES),
                 },
@@ -947,10 +1048,19 @@ class FEMService:
 
         if method == "material":
             self._action(params, "assign")
-            material = dict(params)
-            nested = params.get("material")
-            if isinstance(nested, Mapping):
-                material.update(nested)
+            material_fields = {
+                "name", "targets", "youngs_modulus_pa", "poisson_ratio", "density_kg_m3",
+                "yield_strength_pa", "hardening_model", "yield_points",
+            }
+            material = {
+                key: params[key]
+                for key in material_fields
+                if key in params
+            }
+            # ``material_id`` is the established route-level name alias; it
+            # never crosses into operations as an unsupported control field.
+            if "name" not in material and params.get("material_id") is not None:
+                material["name"] = params["material_id"]
             result = self.operations.set_material(params.get("analysis_id"), material)
             return {"material_id": result["name"], **result}
 
@@ -1634,7 +1744,20 @@ class FEMService:
                 }
             references = self._references(params.get("targets", []), strict_targets=True)
             data: dict[str, Any] = {"references": references}
-            if kind == "force":
+            if kind == "transform":
+                data["transform_type"] = params["transform_type"]
+                if params["transform_type"] == "rectangular":
+                    data["rotation_rad"] = self._finite_vector(
+                        params["rotation_rad"], "rotation_rad", strict_numeric=True
+                    )
+                else:
+                    data["base_point_m"] = self._finite_vector(
+                        params["base_point_m"], "base_point_m", strict_numeric=True
+                    )
+                    data["axis_m"] = self._finite_vector(
+                        params["axis_m"], "axis_m", strict_numeric=True
+                    )
+            elif kind == "force":
                 data["force"] = self._finite_value(params["force_n"], "force_n", strict_numeric=True)
             elif kind == "pressure":
                 data["pressure"] = self._finite_value(params["pressure_pa"], "pressure_pa", strict_numeric=True)
@@ -1692,7 +1815,20 @@ class FEMService:
         # shape for nested targets.  The legacy aliases below remain supported,
         # but arbitrary nested native/property fields must not cross the bridge.
         data = {"references": self._references(targets, strict_targets=True)}
-        if "force_n" in params:
+        if params.get("constraint_type") == "transform":
+            data["transform_type"] = params["transform_type"]
+            if params["transform_type"] == "rectangular":
+                data["rotation_rad"] = self._finite_vector(
+                    params["rotation_rad"], "rotation_rad", strict_numeric=True
+                )
+            else:
+                data["base_point_m"] = self._finite_vector(
+                    params["base_point_m"], "base_point_m", strict_numeric=True
+                )
+                data["axis_m"] = self._finite_vector(
+                    params["axis_m"], "axis_m", strict_numeric=True
+                )
+        elif "force_n" in params:
             force = params["force_n"]
             if not isinstance(force, (list, tuple)) or force:
                 data["force"] = self._compat_scalar(force, "force_n")

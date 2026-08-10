@@ -100,6 +100,12 @@ RemoteDisplacementVector3 = Annotated[
     list[RemoteDisplacementComponent], Field(min_length=3, max_length=3)
 ]
 RemoteRotationVector3 = Annotated[list[RemoteRotationComponent], Field(min_length=3, max_length=3)]
+TransformRotationComponent = Annotated[
+    StrictFloat, Field(ge=-1e6, le=1e6), AfterValidator(_finite)
+]
+TransformRotationVector3 = Annotated[
+    list[TransformRotationComponent], Field(min_length=3, max_length=3)
+]
 CentrifugalFrequencyHz = Annotated[StrictFloat, Field(gt=0, le=1e9), AfterValidator(_finite)]
 BoundedInt = Annotated[StrictInt, Field(ge=0, le=2_147_483_647)]
 # Modal result selection is deliberately narrower than the solver's mode count
@@ -406,11 +412,29 @@ def _validate_nonlinear_material_fields(
         previous_strain = point.plastic_strain
 
 
+class EntityRef(StrictModel):
+    """A FreeCAD object and explicit subelements selected by a constraint."""
+
+    object_name: BoundedText = Field(
+        description="Exact FreeCAD object Name, for example 'Cantilever'; do not use object_id."
+    )
+    subelements: StringList = Field(
+        description="FreeCAD subelement names such as 'Face1' or 'Edge2'; use [] for the whole object.",
+    )
+
+
 class MaterialRequest(StrictModel):
     document_id: BoundedText | None = None
     analysis_id: BoundedText
     material_id: BoundedText | None = None
     name: OptionalText | None = None
+    targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
+        default_factory=list,
+        description=(
+            "Explicit Edge/Face/Solid references for this material. An empty list "
+            "keeps a global material assignment."
+        ),
+    )
     youngs_modulus_pa: PositiveFiniteFloat | None = None
     poisson_ratio: Annotated[StrictFloat, Field(gt=-1, lt=0.5), AfterValidator(_finite)] | None = (
         None
@@ -424,17 +448,6 @@ class MaterialRequest(StrictModel):
     def validate_nonlinear_material(self) -> "MaterialRequest":
         _validate_nonlinear_material_fields(self.hardening_model, self.yield_points)
         return self
-
-
-class EntityRef(StrictModel):
-    """A FreeCAD object and explicit subelements selected by a constraint."""
-
-    object_name: BoundedText = Field(
-        description="Exact FreeCAD object Name, for example 'Cantilever'; do not use object_id."
-    )
-    subelements: StringList = Field(
-        description="FreeCAD subelement names such as 'Face1' or 'Edge2'; use [] for the whole object.",
-    )
 
 
 class AmplitudePoint(StrictModel):
@@ -497,7 +510,7 @@ class ConstraintRequest(StrictModel):
     analysis_id: BoundedText
     constraint_id: BoundedText | None = None
     constraint_type: Literal[
-        "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation"
+        "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation", "transform"
     ] | None = None
     # Empty targets deliberately mean "the current GUI selection".  The Addon
     # resolves that selection on the FreeCAD main thread.
@@ -513,6 +526,10 @@ class ConstraintRequest(StrictModel):
     force_n: ValueList = Field(default_factory=list)
     pressure_pa: ValueList = Field(default_factory=list)
     selfweight_acceleration_m_s2: ValueList = Field(default_factory=list)
+    transform_type: Literal["rectangular", "cylindrical"] | None = None
+    base_point_m: RemoteReferenceVector3 | None = None
+    axis_m: RemoteReferenceVector3 | None = None
+    rotation_rad: TransformRotationVector3 | None = None
 
     @model_validator(mode="after")
     def validate_plane_rotation_values(self) -> "ConstraintRequest":
@@ -526,6 +543,29 @@ class ConstraintRequest(StrictModel):
             )
         ):
             raise ValueError("value fields are unsupported for plane_rotation")
+        if self.constraint_type == "transform":
+            if not self.targets:
+                raise ValueError("transform requires explicit targets")
+            if self.transform_type == "rectangular":
+                if self.base_point_m is not None or self.rotation_rad is None or self.axis_m is not None:
+                    raise ValueError("rectangular transform requires rotation_rad only")
+            elif self.transform_type == "cylindrical":
+                if self.base_point_m is None or self.axis_m is None or self.rotation_rad is not None:
+                    raise ValueError("cylindrical transform requires base_point_m and axis_m only")
+                if math.sqrt(sum(component * component for component in self.axis_m)) <= 0.0:
+                    raise ValueError("axis_m must have a non-zero norm")
+            else:
+                raise ValueError("transform_type is required for transform")
+            if any(
+                value
+                for value in (
+                    self.displacement_m,
+                    self.force_n,
+                    self.pressure_pa,
+                    self.selfweight_acceleration_m_s2,
+                )
+            ):
+                raise ValueError("value fields are unsupported for transform")
         return self
 
 
@@ -605,6 +645,13 @@ class AssignMaterialRequest(StrictModel):
     analysis_id: BoundedText
     material_id: BoundedText | None = None
     name: OptionalText | None = None
+    targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
+        default_factory=list,
+        description=(
+            "Explicit Edge/Face/Solid references for this material. An empty list "
+            "keeps a global material assignment."
+        ),
+    )
     youngs_modulus_pa: PositiveFiniteFloat | None = None
     poisson_ratio: Annotated[StrictFloat, Field(gt=-1, lt=0.5), AfterValidator(_finite)] | None = (
         None
@@ -624,7 +671,7 @@ class AddConstraintRequest(StrictModel):
     document_id: BoundedText | None = None
     analysis_id: BoundedText
     constraint_type: Literal[
-        "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation"
+        "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation", "transform"
     ]
     targets: Annotated[list[EntityRef], Field(max_length=MAX_LIST)] = Field(
         default_factory=list,
@@ -638,6 +685,10 @@ class AddConstraintRequest(StrictModel):
     force_n: ValueList = Field(default_factory=list)
     pressure_pa: ValueList = Field(default_factory=list)
     selfweight_acceleration_m_s2: ValueList = Field(default_factory=list)
+    transform_type: Literal["rectangular", "cylindrical"] | None = None
+    base_point_m: RemoteReferenceVector3 | None = None
+    axis_m: RemoteReferenceVector3 | None = None
+    rotation_rad: TransformRotationVector3 | None = None
 
     @model_validator(mode="after")
     def validate_plane_rotation_values(self) -> "AddConstraintRequest":
@@ -651,6 +702,29 @@ class AddConstraintRequest(StrictModel):
             )
         ):
             raise ValueError("value fields are unsupported for plane_rotation")
+        if self.constraint_type == "transform":
+            if not self.targets:
+                raise ValueError("transform requires explicit targets")
+            if self.transform_type == "rectangular":
+                if self.base_point_m is not None or self.rotation_rad is None or self.axis_m is not None:
+                    raise ValueError("rectangular transform requires rotation_rad only")
+            elif self.transform_type == "cylindrical":
+                if self.base_point_m is None or self.axis_m is None or self.rotation_rad is not None:
+                    raise ValueError("cylindrical transform requires base_point_m and axis_m only")
+                if math.sqrt(sum(component * component for component in self.axis_m)) <= 0.0:
+                    raise ValueError("axis_m must have a non-zero norm")
+            else:
+                raise ValueError("transform_type is required for transform")
+            if any(
+                value
+                for value in (
+                    self.displacement_m,
+                    self.force_n,
+                    self.pressure_pa,
+                    self.selfweight_acceleration_m_s2,
+                )
+            ):
+                raise ValueError("value fields are unsupported for transform")
         return self
 
 

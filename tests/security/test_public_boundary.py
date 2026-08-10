@@ -2778,6 +2778,23 @@ def test_addon_status_exposes_bounded_native_element_geometry_capabilities() -> 
     assert "escape" not in refreshed["element_geometry"]["beam_section"]["section_types"]
 
 
+def test_addon_status_exposes_bounded_material_and_transform_capabilities() -> None:
+    service, _operations = _service()
+    capabilities = service(Request(95, "status", {"action": "get"}))["capabilities"]
+    assert capabilities["material_assignment"] == {
+        "references": "Vertex|Edge|Face|Solid",
+        "multiple_regions": True,
+        "global_without_references": True,
+    }
+    assert capabilities["constraint_transform"]["transform_types"] == [
+        "rectangular", "cylindrical"
+    ]
+    assert capabilities["constraint_transform"]["rectangular_rotation"] == "axis-angle-radians"
+    capabilities["constraint_transform"]["transform_types"].append("escape")
+    refreshed = service(Request(96, "status", {"action": "get"}))["capabilities"]
+    assert "escape" not in refreshed["constraint_transform"]["transform_types"]
+
+
 def test_addon_element_geometry_formulation_is_closed_and_forwarded() -> None:
     service, operations = _service()
     service(

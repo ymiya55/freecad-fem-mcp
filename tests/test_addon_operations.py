@@ -62,6 +62,7 @@ class _Shape:
         self._elements = {
             "Vertex1": _ShapeElement("Vertex"),
             "Edge1": _ShapeElement("Edge", "Part::GeomLine"),
+            "Edge2": _ShapeElement("Edge", "Part::GeomLine"),
             "Face1": _ShapeElement("Face"),
             "Face2": _ShapeElement("Face"),
             "Solid1": _ShapeElement("Solid"),
@@ -466,6 +467,59 @@ class _NativeElementGeometry:
         return self._property_types[name]
 
 
+class _NativeConstraintTransform:
+    _property_types = {
+        "References": "App::PropertyLinkSubList",
+        "TransformType": "App::PropertyEnumeration",
+        "BasePoint": "App::PropertyVector",
+        "Axis": "App::PropertyVector",
+        "Rotation": "App::PropertyRotation",
+    }
+
+    def __init__(self, name: str):
+        object.__setattr__(self, "Name", name)
+        object.__setattr__(self, "Label", name)
+        object.__setattr__(self, "TypeId", "Fem::ConstraintTransform")
+        for prop in self._property_types:
+            object.__setattr__(self, prop, [] if prop == "References" else None)
+
+    def __setattr__(self, name, value):
+        if name not in self._property_types and name not in {"Name", "Label", "TypeId"}:
+            raise AssertionError("unexpected native transform property: {}".format(name))
+        object.__setattr__(self, name, value)
+
+    def getTypeIdOfProperty(self, name):
+        return self._property_types[name]
+
+
+class _NativeMaterial:
+    _property_types = {
+        "References": "App::PropertyLinkSubListGlobal",
+        "Material": "App::PropertyMap",
+    }
+
+    def __init__(self, name: str):
+        object.__setattr__(self, "Name", name)
+        object.__setattr__(self, "Label", name)
+        object.__setattr__(self, "TypeId", "App::MaterialObjectPython")
+        object.__setattr__(self, "Category", "Solid")
+        object.__setattr__(self, "References", [])
+        object.__setattr__(self, "Material", {
+            "Name": name,
+            "YoungsModulus": "210000 MPa",
+            "PoissonRatio": "0.30",
+            "Density": "7850 kg/m^3",
+        })
+
+    def __setattr__(self, name, value):
+        if name not in self._property_types and name not in {"Name", "Label", "TypeId", "Category"}:
+            raise AssertionError("unexpected native material property: {}".format(name))
+        object.__setattr__(self, name, value)
+
+    def getTypeIdOfProperty(self, name):
+        return self._property_types[name]
+
+
 class _NativeGmshMesh:
     _allowed = {"Name", "Label", "TypeId", "Shape", "ElementDimension"}
 
@@ -504,6 +558,14 @@ class _ObjectsFemWithGeometry(_ObjectsFemWithConnections):
     @staticmethod
     def makeElementRotation1D(doc, name="ElementRotation1D"):
         return _register_geometry(doc, _NativeElementGeometry(name, "Fem::ElementRotation1D"))
+
+    @staticmethod
+    def makeConstraintTransform(doc, name="ConstraintTransform"):
+        return _register_geometry(doc, _NativeConstraintTransform(name))
+
+    @staticmethod
+    def makeMaterialSolid(doc, name="MaterialSolid"):
+        return _register_geometry(doc, _NativeMaterial(name))
 
 
 def _analysis_solver(app: _AnalysisApp):
@@ -568,6 +630,183 @@ def test_element_geometry_beam_section_maps_native_enum_dimensions_and_edges() -
         },
     )
     assert solver.BeamReducedIntegration is True
+
+
+def test_material_references_partition_regions_and_overlap_rolls_back() -> None:
+    app, operations = _geometry_operations()
+    first = operations.set_material(
+        "Analysis",
+        {
+            "name": "MaterialEdge1",
+            "targets": [{"object_name": "Geometry", "subelements": ["Edge1"]}],
+        },
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert first["references"] == 1
+    assert native.References == [(app.ActiveDocument.geometry, "Edge1")]
+    operations.set_material(
+        "Analysis",
+        {
+            "name": "MaterialEdge2",
+            "references": [{"object": "Geometry", "sub_element": "Edge2"}],
+        },
+    )
+    before = list(app.ActiveDocument.analysis.Group)
+    with pytest.raises(OperationError, match="overlap"):
+        operations.set_material(
+            "Analysis",
+            {
+                "name": "MaterialOverlap",
+                "references": [{"object": "Geometry", "sub_element": "Edge1"}],
+            },
+        )
+    assert app.ActiveDocument.analysis.Group == before
+
+    with pytest.raises(OperationError, match="additional materials"):
+        operations.set_material("Analysis", {"name": "MaterialGlobal"})
+
+
+def test_transform_constraint_maps_rectangular_and_cylindrical_native_properties() -> None:
+    app, operations = _geometry_operations()
+    operations.assign_element_geometry(
+        "Analysis",
+        "beam_section",
+        {
+            "references": _element_refs("Edge1"),
+            "section_type": "rectangular",
+            "rect_width_m": 0.01,
+            "rect_height_m": 0.02,
+        },
+    )
+    rectangular = operations.add_constraint(
+        "Analysis",
+        "transform",
+        {
+            "references": _element_refs("Edge1"),
+            "transform_type": "rectangular",
+            "rotation_rad": [0.0, 0.0, 0.5],
+        },
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert rectangular["kind"] == "transform"
+    assert native.TransformType == "Rectangular"
+    assert native.BasePoint is None
+    assert native.Rotation == (0.0, 0.0, 0.5)
+
+    app, operations = _geometry_operations()
+    operations.assign_element_geometry(
+        "Analysis",
+        "shell",
+        {"references": [{"object": "Geometry", "sub_element": "Face1"}], "thickness_m": 0.001},
+    )
+    operations.add_constraint(
+        "Analysis",
+        "transform",
+        {
+            "references": [{"object": "Geometry", "sub_element": "Face1"}],
+            "transform_type": "cylindrical",
+            "base_point_m": [0.0, 0.0, 0.1],
+            "axis_m": [0.0, 0.0, 1.0],
+        },
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    assert native.TransformType == "Cylindrical"
+    assert native.BasePoint == (0.0, 0.0, 100.0)
+    assert native.Axis == (0.0, 0.0, 1000.0)
+
+
+def test_transform_missing_factory_or_wrong_domain_aborts_transaction() -> None:
+    app, operations = _geometry_operations(objects_fem=object())
+    before = list(app.ActiveDocument.analysis.Group)
+    with pytest.raises(OperationError, match="factory"):
+        operations.add_constraint(
+            "Analysis",
+            "transform",
+            {
+                "references": _element_refs("Edge1"),
+                "transform_type": "rectangular",
+                "rotation_rad": [0.0, 0.0, 0.0],
+            },
+        )
+    assert app.ActiveDocument.analysis.Group == before
+
+
+def test_validate_reports_material_region_overlap_and_missing_coverage() -> None:
+    app, operations = _geometry_operations()
+    operations.assign_element_geometry(
+        "Analysis",
+        "beam_section",
+        {
+            "references": _element_refs("Edge1"),
+            "section_type": "rectangular",
+            "rect_width_m": 0.01,
+            "rect_height_m": 0.02,
+        },
+    )
+    operations.assign_element_geometry(
+        "Analysis",
+        "beam_section",
+        {
+            "references": _element_refs("Edge2"),
+            "section_type": "circular",
+            "circ_diameter_m": 0.02,
+        },
+    )
+    operations.set_material(
+        "Analysis",
+        {"name": "MaterialEdge1", "targets": [{"object_name": "Geometry", "subelements": ["Edge1"]}]},
+    )
+    operations.set_material(
+        "Analysis",
+        {"name": "MaterialEdge2", "targets": [{"object_name": "Geometry", "subelements": ["Edge2"]}]},
+    )
+    mesh = type(
+        "BeamMesh",
+        (),
+        {"Name": "BeamMesh", "Label": "BeamMesh", "TypeId": "Fem::FemMeshGmsh", "ElementDimension": "1D"},
+    )()
+    app.ActiveDocument.analysis.Group.append(mesh)
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert not any("material coverage is missing" in str(item) for item in diagnostics)
+
+    # A persisted stale reference must be surfaced before writer start.
+    material = next(
+        item for item in app.ActiveDocument.analysis.Group if item.TypeId == "App::MaterialObjectPython"
+    )
+    material.References = [(app.ActiveDocument.geometry, "Edge999")]
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert any("material MaterialEdge1 reference 1 is stale" in str(item) for item in diagnostics)
+    assert any("material coverage is missing" in str(item) for item in diagnostics)
+
+
+def test_validate_reports_reopened_transform_shape_and_axis_contract() -> None:
+    app, operations = _geometry_operations()
+    operations.assign_element_geometry(
+        "Analysis",
+        "beam_section",
+        {
+            "references": _element_refs("Edge1"),
+            "section_type": "rectangular",
+            "rect_width_m": 0.01,
+            "rect_height_m": 0.02,
+        },
+    )
+    operations.add_constraint(
+        "Analysis",
+        "transform",
+        {
+            "references": _element_refs("Edge1"),
+            "transform_type": "cylindrical",
+            "base_point_m": [0.0, 0.0, 0.0],
+            "axis_m": [0.0, 0.0, 1.0],
+        },
+    )
+    transform = app.ActiveDocument.analysis.Group[-1]
+    transform.Axis = (0.0, 0.0, 0.0)
+    transform.References = [(app.ActiveDocument.geometry, "Face1")]
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert any("transform" in str(item).lower() and "axis" in str(item).lower() for item in diagnostics)
+    assert any("transform" in str(item).lower() and "analysis geometry" in str(item).lower() for item in diagnostics)
 
 
 def test_element_geometry_shell_and_rotation_map_native_face_edge_properties() -> None:

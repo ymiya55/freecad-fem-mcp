@@ -198,6 +198,52 @@ def test_constraint_targets_are_explicit_and_empty_is_selection() -> None:
     assert plane.targets == []
 
 
+def test_material_regions_and_constraint_transforms_are_closed() -> None:
+    material = MaterialRequest(
+        analysis_id="Analysis",
+        targets=[EntityRef(object_name="Beam", subelements=["Edge1"])],
+    )
+    assert material.targets[0].subelements == ["Edge1"]
+    rectangular = ConstraintRequest(
+        analysis_id="Analysis",
+        constraint_type="transform",
+        targets=[EntityRef(object_name="Beam", subelements=["Edge1"])],
+        transform_type="rectangular",
+        rotation_rad=[0.0, 0.0, 0.5],
+    )
+    assert rectangular.rotation_rad == [0.0, 0.0, 0.5]
+    cylindrical = ConstraintRequest(
+        analysis_id="Analysis",
+        constraint_type="transform",
+        targets=[EntityRef(object_name="Shell", subelements=["Face1"])],
+        transform_type="cylindrical",
+        base_point_m=[0.0, 0.0, 0.0],
+        axis_m=[0.0, 0.0, 1.0],
+    )
+    assert cylindrical.axis_m == [0.0, 0.0, 1.0]
+    invalid = (
+        {"analysis_id": "Analysis", "constraint_type": "transform"},
+        {
+            "analysis_id": "Analysis",
+            "constraint_type": "transform",
+            "targets": [EntityRef(object_name="Beam", subelements=["Edge1"])],
+            "transform_type": "rectangular",
+            "rotation_rad": [0.0, None, 0.0],
+        },
+        {
+            "analysis_id": "Analysis",
+            "constraint_type": "transform",
+            "targets": [EntityRef(object_name="Beam", subelements=["Edge1"])],
+            "transform_type": "cylindrical",
+            "base_point_m": [0.0, 0.0, 0.0],
+            "axis_m": [0.0, 0.0, 0.0],
+        },
+    )
+    for params in invalid:
+        with pytest.raises(ValidationError):
+            ConstraintRequest(**params)
+
+
 def test_typed_loads_require_only_their_matching_si_value() -> None:
     force = AddLoadRequest(analysis_id="Analysis", load_type="force", force_n=10.0)
     assert force.force_n == 10.0

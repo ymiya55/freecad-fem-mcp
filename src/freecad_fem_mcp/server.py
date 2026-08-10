@@ -78,6 +78,7 @@ from .models import (
     RemoteDisplacementVector3,
     RemoteReferenceVector3,
     RemoteRotationVector3,
+    TransformRotationVector3,
     SaveDocumentRequest,
     SetViewRequest,
     ShowResultRequest,
@@ -423,6 +424,16 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         document_id: BoundedText | None = None,
         material_id: BoundedText | None = None,
         name: OptionalText | None = None,
+        targets: Annotated[
+            list[EntityRef],
+            Field(
+                max_length=128,
+                description=(
+                    "Explicit Edge/Face/Solid material regions. Use [] for a global material."
+                ),
+            ),
+        ]
+        | None = None,
         youngs_modulus_pa: PositiveFiniteFloat | None = None,
         poisson_ratio: FiniteFloat | None = None,
         density_kg_m3: PositiveFiniteFloat | None = None,
@@ -435,6 +446,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             document_id=document_id,
             material_id=material_id,
             name=name,
+            targets=targets or [],
             youngs_modulus_pa=youngs_modulus_pa,
             poisson_ratio=poisson_ratio,
             density_kg_m3=density_kg_m3,
@@ -537,14 +549,16 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             "[{object_name: 'Cantilever', subelements: ['Face1']}]. "
             "Leave targets empty to use the current GUI selection; never use object_id. "
             "plane_rotation is a native CalculiX *MPC,PLANE coplanarity constraint "
-            "over referenced mesh nodes, not a frictionless or symmetry support."
+            "over referenced mesh nodes, not a frictionless or symmetry support. "
+            "ConstraintTransform rectangular uses an axis-angle rotation vector; "
+            "cylindrical uses base_point_m plus a non-zero axis_m."
         ),
         annotations=ann(readonly=False, destructive=False),
     )
     async def add_constraint(
         analysis_id: BoundedText,
         constraint_type: Literal[
-            "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation"
+            "fixed", "displacement", "force", "pressure", "selfweight", "plane_rotation", "transform"
         ],
         document_id: BoundedText | None = None,
         targets: Annotated[
@@ -563,6 +577,10 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         force_n: ValueList | None = None,
         pressure_pa: ValueList | None = None,
         selfweight_acceleration_m_s2: ValueList | None = None,
+        transform_type: Literal["rectangular", "cylindrical"] | None = None,
+        base_point_m: RemoteReferenceVector3 | None = None,
+        axis_m: RemoteReferenceVector3 | None = None,
+        rotation_rad: TransformRotationVector3 | None = None,
     ) -> Any:
         request = AddConstraintRequest(
             analysis_id=analysis_id,
@@ -573,6 +591,10 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             force_n=force_n or [],
             pressure_pa=pressure_pa or [],
             selfweight_acceleration_m_s2=selfweight_acceleration_m_s2 or [],
+            transform_type=transform_type,
+            base_point_m=base_point_m,
+            axis_m=axis_m,
+            rotation_rad=rotation_rad,
         )
         return await invoke("constraint", "add", request)
 

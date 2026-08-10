@@ -163,6 +163,16 @@ beamの規定自由度は`add_boundary_condition(boundary_type="displacement")`�
 native `BeamReducedIntegration=false`、Pipeは`true`へ安全に設定され、trussは
 `ExcludeBendingStiffness=true`の独立presetとして扱われます。
 
+複数領域へ材料を割り当てる場合は、各`assign_material`の`targets`にbeamのEdgeまたはshellのFaceを
+明示します。`targets=[]`はglobal材料です。global材料と明示領域材料の混在、領域の重複、stale参照、
+複数材料使用時の断面・板厚参照に対する未割当は`validate_analysis`で拒否されます。
+
+局所座標系は`add_constraint(constraint_type="transform")`で明示参照へ割り当てます。
+`transform_type="rectangular"`は3成分の`rotation_rad`だけを受け付け、回転ベクトルの大きさをrad、
+方向を回転軸としてnative直交基底へ変換します。native writerがRectangularの原点を使用しないため、
+`base_point_m`は受け付けません。`transform_type="cylindrical"`は`base_point_m`と非ゼロ`axis_m`を
+必要とします。これは節点座標系の変換であり、beam end releaseの代替ではありません。
+
 TieとContactは`add_connection`を使い、`slave`と`master`へ実在するFaceを各1面指定します。
 Tieは`tolerance_m`と`adjust`が必須です。Contactはstatic・non-thermalに限定し、
 `surface_behavior`へ`hard`、`linear`、`tied`を指定します。Linear/Tiedでは正の

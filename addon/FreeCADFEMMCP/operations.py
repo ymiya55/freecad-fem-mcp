@@ -48,6 +48,7 @@ _CONSTRAINT_TYPES = {
     # coplanarity of the referenced node set; it is intentionally not exposed
     # as a frictionless/symmetry support preset.
     "plane_rotation": "Fem::ConstraintPlaneRotation",
+    "transform": "Fem::ConstraintTransform",
     # Native CalculiX writes pin/roller presets through the displacement
     # constraint's Cartesian DOF flags; no generic MPC or custom INP is used.
     "pin": "Fem::ConstraintDisplacement",
@@ -563,6 +564,65 @@ class FreeCADOperations:
         analysis_obj = self._find(doc, analysis)
         if not isinstance(material, Mapping):
             raise OperationError("material must be an object")
+        allowed_fields = {
+            "name", "label", "youngs_modulus_pa", "youngs_modulus", "E",
+            "poisson_ratio", "nu", "density_kg_m3", "density", "yield_strength_pa",
+            "hardening_model", "yield_points", "nonlinear_name", "references", "targets",
+        }
+        unknown = set(material) - allowed_fields
+        if unknown:
+            raise OperationError(
+                "unsupported material fields: {}".format(
+                    ", ".join(sorted(str(item) for item in unknown))
+                )
+            )
+        if "references" in material and "targets" in material:
+            raise OperationError("material accepts references or targets, not both")
+        raw_references = material.get("references")
+        if "targets" in material:
+            targets = material.get("targets")
+            if not isinstance(targets, list):
+                raise OperationError("material targets must be a list")
+            raw_references = []
+            for target in targets:
+                if not isinstance(target, Mapping):
+                    raise OperationError("material target must be an object")
+                object_name = target.get("object_name", target.get("object"))
+                subelements = target.get("subelements")
+                if subelements is None and "sub_element" in target:
+                    subelements = [target["sub_element"]]
+                if not isinstance(object_name, str) or not isinstance(subelements, list):
+                    raise OperationError("material target must contain object_name and subelements")
+                if not subelements:
+                    subelements = [""]
+                raw_references.extend(
+                    {"object": object_name, "sub_element": subelement}
+                    for subelement in subelements
+                )
+        references: list[tuple[Any, str]] = []
+        if raw_references not in (None, []):
+            references = self._references(doc, raw_references)
+            self._validate_material_references(references)
+        existing_materials = [
+            item
+            for item in list(getattr(analysis_obj, "Group", []) or [])
+            if str(getattr(item, "TypeId", "")) == "App::MaterialObjectPython"
+        ]
+        if existing_materials and not references:
+            raise OperationError("additional materials require explicit references")
+        if references:
+            new_keys = {(self._object_id(obj), subelement) for obj, subelement in references}
+            for existing in existing_materials:
+                existing_refs = self._normalize_native_references(
+                    getattr(existing, "References", None) or []
+                )
+                if not existing_refs:
+                    raise OperationError("material references overlap an existing global material")
+                existing_keys = {
+                    (self._object_id(obj), subelement) for obj, subelement in existing_refs
+                }
+                if new_keys.intersection(existing_keys):
+                    raise OperationError("material references overlap an existing material")
         name = _safe_name(material.get("name"), "MaterialSolid")
         young = _finite_number(material.get("youngs_modulus_pa", material.get("youngs_modulus", material.get("E", 210000000000.0))), "youngs_modulus", 0.0)
         poisson = _finite_number(material.get("poisson_ratio", material.get("nu", 0.3)), "poisson_ratio")
@@ -635,6 +695,13 @@ class FreeCADOperations:
                         setattr(obj, key, value)
                     except Exception:
                         pass
+            if references:
+                self._element_geometry_property(
+                    obj,
+                    "References",
+                    references,
+                    type_id="App::PropertyLinkSubListGlobal",
+                )
             if normalized_points is not None:
                 required_keys = ("Name", "YoungsModulus", "PoissonRatio", "Density")
                 try:
@@ -676,6 +743,7 @@ class FreeCADOperations:
                     "youngs_modulus": young,
                     "poisson_ratio": poisson,
                     "density": density,
+                    "references": len(references),
                     "hardening_model": hardening,
                     "yield_points": normalized_points,
                 }
@@ -685,6 +753,7 @@ class FreeCADOperations:
             "youngs_modulus": young,
             "poisson_ratio": poisson,
             "density": density,
+            "references": len(references),
         }
 
     def _references(self, doc: Any, raw: Any) -> list[tuple[Any, str]]:
@@ -763,6 +832,18 @@ class FreeCADOperations:
                 raise OperationError("boundary subelement does not exist") from exc
             if element is None or str(getattr(element, "ShapeType", "")) != prefix:
                 raise OperationError("boundary subelement type does not match its name")
+
+    @classmethod
+    def _validate_material_references(cls, references: list[tuple[Any, str]]) -> None:
+        """Reject forged, stale, or duplicate material-region references."""
+
+        cls._validate_boundary_references(references)
+        seen: set[tuple[str, str]] = set()
+        for obj, subelement in references:
+            key = (cls._object_id(obj), subelement)
+            if key in seen:
+                raise OperationError("material references must be unique")
+            seen.add(key)
 
     def _vector(self, value: Any) -> Any:
         if isinstance(value, (list, tuple)) and len(value) == 3:
@@ -845,12 +926,120 @@ class FreeCADOperations:
         except Exception as exc:
             raise OperationError("native amplitude properties are unavailable") from exc
 
+    @classmethod
+    def _validate_transform_references(cls, references: list[tuple[Any, str]]) -> None:
+        """Validate explicit node-set sources accepted by *TRANSFORM."""
+
+        cls._validate_boundary_references(references)
+        seen: set[tuple[str, str]] = set()
+        for obj, subelement in references:
+            key = (cls._object_id(obj), subelement)
+            if key in seen:
+                raise OperationError("transform references must be unique")
+            seen.add(key)
+
+    def _add_constraint_transform(
+        self, analysis_obj: Any, params: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        doc = self._document()
+        data = dict(params)
+        allowed = {
+            "name", "references", "refs", "transform_type", "base_point_m", "axis_m", "rotation_rad"
+        }
+        unknown = set(data) - allowed
+        if unknown:
+            raise OperationError(
+                "unsupported transform fields: {}".format(
+                    ", ".join(sorted(str(item) for item in unknown))
+                )
+            )
+        transform_type = data.get("transform_type")
+        if transform_type not in {"rectangular", "cylindrical"}:
+            raise OperationError("transform_type is unsupported")
+        raw_references = data.pop("references", data.pop("refs", None))
+        references = self._references(doc, raw_references)
+        self._validate_transform_references(references)
+        base_point_m = self._remote_vector(data, "base_point_m", 1e9, required=False)
+        axis_m = self._remote_vector(data, "axis_m", 1e9, required=False)
+        rotation_rad = self._remote_vector(data, "rotation_rad", 1e6, required=False)
+        if transform_type == "rectangular":
+            if data.get("rotation_rad") is None or "base_point_m" in data or "axis_m" in data:
+                raise OperationError("rectangular transform requires rotation_rad only")
+            base_point_m = (0.0, 0.0, 0.0)
+            axis_m = (0.0, 0.0, 0.0)
+        else:
+            if data.get("axis_m") is None or data.get("base_point_m") is None or "rotation_rad" in data:
+                raise OperationError("cylindrical transform requires base_point_m and axis_m only")
+            if math.sqrt(sum(component * component for component in axis_m)) <= 0.0:
+                raise OperationError("axis_m must have a non-zero norm")
+            rotation_rad = (0.0, 0.0, 0.0)
+        name = _safe_name(data.get("name"), "ConstraintTransform")
+        solver_geometry = (
+            self._element_geometry_members(analysis_obj, "Fem::ElementGeometry1D"),
+            self._element_geometry_members(analysis_obj, "Fem::ElementGeometry2D"),
+        )
+        if solver_geometry[0]:
+            accepted = {"", "Vertex", "Edge"}
+        elif solver_geometry[1]:
+            accepted = {"", "Vertex", "Face"}
+        else:
+            accepted = {"", "Vertex", "Edge", "Face", "Solid"}
+        for _obj, subelement in references:
+            if subelement and not any(subelement.startswith(prefix) for prefix in accepted if prefix):
+                raise OperationError("transform references do not match analysis geometry")
+        with self._transaction(doc, "Add transform constraint"):
+            factory = getattr(self.objects_fem, "makeConstraintTransform", None)
+            if not callable(factory):
+                raise OperationError("native transform factory is unavailable")
+            try:
+                obj = factory(doc, name)
+            except Exception as exc:
+                raise OperationError("native transform factory failed") from exc
+            if self.fem_type(obj) != "Fem::ConstraintTransform":
+                raise OperationError("native transform type is unavailable")
+            self._element_geometry_property(
+                obj, "References", references, type_id="App::PropertyLinkSubList"
+            )
+            native_type = "Rectangular" if transform_type == "rectangular" else "Cylindrical"
+            self._element_geometry_property(
+                obj, "TransformType", native_type, type_id="App::PropertyEnumeration"
+            )
+            if transform_type == "rectangular":
+                self._element_geometry_property(
+                    obj,
+                    "Rotation",
+                    self._remote_rotation(rotation_rad),
+                    type_id="App::PropertyRotation",
+                )
+            else:
+                self._element_geometry_property(
+                    obj,
+                    "BasePoint",
+                    self._vector(tuple(component * 1000.0 for component in base_point_m)),
+                    type_id="App::PropertyVector",
+                )
+                self._element_geometry_property(
+                    obj,
+                    "Axis",
+                    self._vector(tuple(component * 1000.0 for component in axis_m)),
+                    type_id="App::PropertyVector",
+                )
+            self._add_to_analysis(analysis_obj, obj)
+        return {
+            "name": self._object_id(obj),
+            "kind": "transform",
+            "transform_type": transform_type,
+            "references": len(references),
+        }
+
     def add_constraint(self, analysis: str, kind: str, params: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         doc = self._document()
         analysis_obj = self._find(doc, analysis)
         if kind not in _CONSTRAINT_TYPES:
             raise OperationError("unsupported constraint kind")
         data = dict(params or {})
+        if kind == "transform":
+            return self._add_constraint_transform(analysis_obj, data)
         if kind == "plane_rotation":
             unsupported = set(data) - {"name", "references", "refs"}
             if unsupported:
@@ -2146,7 +2335,12 @@ class FreeCADOperations:
         """Check native references without mutating or raising from validation."""
 
         token = cls._constraint_token(item)
-        if "solvercalculix" in token or "femmesh" in token or "material" in token:
+        if (
+            "solvercalculix" in token
+            or "femmesh" in token
+            or "material" in token
+            or "constrainttransform" in token
+        ):
             return []
         is_centrifugal = cls._is_centrifugal(item, token)
         # Global body loads deliberately have no References property.
@@ -2223,6 +2417,244 @@ class FreeCADOperations:
                 continue
             if expected_kind and str(getattr(element, "ShapeType", "")) != expected_kind:
                 diagnostics.append("constraint {} requires {} references".format(name, expected_kind))
+        return diagnostics
+
+    @classmethod
+    def _native_vector_values(cls, value: Any) -> tuple[float, float, float] | None:
+        """Read a native vector without accepting arbitrary client objects."""
+
+        if value is None:
+            return None
+        if all(hasattr(value, axis) for axis in ("x", "y", "z")):
+            components = (getattr(value, "x"), getattr(value, "y"), getattr(value, "z"))
+        elif isinstance(value, (tuple, list)) and len(value) == 3:
+            components = tuple(value)
+        else:
+            return None
+        numbers: list[float] = []
+        for component in components:
+            if isinstance(component, bool):
+                return None
+            try:
+                number = float(component)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(number):
+                return None
+            numbers.append(number)
+        return (numbers[0], numbers[1], numbers[2])
+
+    @classmethod
+    def _constraint_transform_diagnostics(
+        cls,
+        item: Any,
+        geometry_1d: list[Any],
+        geometry_2d: list[Any],
+    ) -> list[str]:
+        """Validate a reopened native ConstraintTransform object.
+
+        The transform object is intentionally checked from its persisted native
+        properties, rather than an in-memory formulation map.  This keeps
+        save/reopen behavior deterministic and rejects stale/wrong references
+        before CalculiX starts.
+        """
+
+        token = cls._constraint_token(item)
+        if "constrainttransform" not in token:
+            return []
+        name = cls._object_id(item) or "ConstraintTransform"
+        diagnostics: list[str] = []
+        refs = cls._normalize_native_references(getattr(item, "References", None) or [])
+        if not refs:
+            diagnostics.append("constraint transform {} requires explicit references".format(name))
+        seen: set[tuple[str, str]] = set()
+        accepted = {"", "Vertex", "Edge", "Face", "Solid"}
+        if geometry_1d:
+            accepted = {"", "Vertex", "Edge"}
+        elif geometry_2d:
+            accepted = {"", "Vertex", "Face"}
+        for index, reference in enumerate(refs, start=1):
+            if not isinstance(reference, (tuple, list)) or len(reference) != 2:
+                diagnostics.append("constraint transform {} reference {} is malformed".format(name, index))
+                continue
+            obj, subelement = reference
+            if obj is None or not isinstance(subelement, str):
+                diagnostics.append("constraint transform {} reference {} is empty".format(name, index))
+                continue
+            key = (cls._object_id(obj), subelement)
+            if key in seen:
+                diagnostics.append("constraint transform {} references must be unique".format(name))
+            seen.add(key)
+            if subelement and not any(subelement.startswith(prefix) for prefix in accepted if prefix):
+                diagnostics.append("constraint transform {} references do not match analysis geometry".format(name))
+                continue
+            if subelement == "":
+                shape = getattr(obj, "Shape", None)
+                is_null = getattr(shape, "isNull", None)
+                if shape is None or (callable(is_null) and is_null()) or (isinstance(is_null, bool) and is_null):
+                    diagnostics.append("constraint transform {} reference {} has a null Shape".format(name, index))
+                continue
+            prefix = next((candidate for candidate in ("Vertex", "Edge", "Face", "Solid") if subelement.startswith(candidate)), None)
+            suffix = subelement[len(prefix):] if prefix is not None else ""
+            if (
+                prefix is None
+                or not suffix
+                or not suffix.isascii()
+                or not suffix.isdigit()
+                or int(suffix) <= 0
+                or (len(suffix) > 1 and suffix.startswith("0"))
+            ):
+                diagnostics.append("constraint transform {} reference {} is malformed".format(name, index))
+                continue
+            shape = getattr(obj, "Shape", None)
+            getter = getattr(shape, "getElement", None) if shape is not None else None
+            if not callable(getter):
+                diagnostics.append("constraint transform {} reference {} has no Shape".format(name, index))
+                continue
+            try:
+                element = getter(subelement)
+            except Exception:
+                diagnostics.append("constraint transform {} reference {} is stale".format(name, index))
+                continue
+            if element is None or str(getattr(element, "ShapeType", "")) != prefix:
+                diagnostics.append("constraint transform {} reference {} is stale".format(name, index))
+
+        transform_type = str(getattr(item, "TransformType", "")).strip().lower()
+        if transform_type not in {"rectangular", "cylindrical"}:
+            diagnostics.append("constraint transform {} has invalid TransformType".format(name))
+            return diagnostics
+        base_point = cls._native_vector_values(getattr(item, "BasePoint", None))
+        if base_point is None or any(abs(component) > 1e9 for component in base_point):
+            diagnostics.append("constraint transform {} has invalid BasePoint".format(name))
+        if transform_type == "rectangular":
+            rotation = getattr(item, "Rotation", None)
+            angle = cls._native_geometry_scalar(getattr(rotation, "Angle", None), "rad")
+            if angle is None and isinstance(rotation, (tuple, list)) and len(rotation) == 3:
+                values = cls._native_vector_values(rotation)
+                angle = math.sqrt(sum(component * component for component in values)) if values is not None else None
+            if angle is None or not math.isfinite(angle) or abs(angle) > 1e6:
+                diagnostics.append("constraint transform {} has invalid Rotation".format(name))
+        else:
+            axis = cls._native_vector_values(getattr(item, "Axis", None))
+            if axis is None or any(abs(component) > 1e9 for component in axis):
+                diagnostics.append("constraint transform {} has invalid Axis".format(name))
+            elif math.sqrt(sum(component * component for component in axis)) <= 0.0:
+                diagnostics.append("constraint transform {} Axis must have a non-zero norm".format(name))
+        return diagnostics
+
+    @classmethod
+    def _material_region_diagnostics(
+        cls,
+        members: list[Any],
+        geometry_1d: list[Any],
+        geometry_2d: list[Any],
+    ) -> list[str]:
+        """Check persisted material/reference partitioning against geometry.
+
+        Native CalculiX supports material and ElementGeometry assignments per
+        edge/face.  A single global material remains valid; once multiple
+        explicit regions are present, every geometry reference must be covered
+        exactly once and no material regions may overlap.
+        """
+
+        material_members = [
+            item
+            for item in members
+            if (
+                str(getattr(item, "TypeId", "")) == "App::MaterialObjectPython"
+                or "materialsolid" in (cls.fem_type(item) + " " + str(getattr(item, "TypeId", ""))).lower()
+            )
+        ]
+        if not material_members:
+            return []
+        diagnostics: list[str] = []
+        explicit: dict[tuple[str, str], str] = {}
+        global_materials: list[str] = []
+        for material in material_members:
+            name = cls._object_id(material) or "Material"
+            refs = cls._normalize_native_references(getattr(material, "References", None) or [])
+            if not refs:
+                global_materials.append(name)
+                continue
+            local: set[tuple[str, str]] = set()
+            for index, reference in enumerate(refs, start=1):
+                if not isinstance(reference, (tuple, list)) or len(reference) != 2:
+                    diagnostics.append("material {} reference {} is malformed".format(name, index))
+                    continue
+                obj, subelement = reference
+                if obj is None or not isinstance(subelement, str):
+                    diagnostics.append("material {} reference {} is empty".format(name, index))
+                    continue
+                key = (cls._object_id(obj), subelement)
+                if key in local:
+                    diagnostics.append("material {} references must be unique".format(name))
+                local.add(key)
+                previous = explicit.get(key)
+                if previous is not None and previous != name:
+                    diagnostics.append("material references overlap between {} and {}".format(previous, name))
+                else:
+                    explicit[key] = name
+                if subelement:
+                    prefix = next((candidate for candidate in ("Vertex", "Edge", "Face", "Solid") if subelement.startswith(candidate)), None)
+                    suffix = subelement[len(prefix):] if prefix is not None else ""
+                    if (
+                        prefix is None
+                        or not suffix
+                        or not suffix.isascii()
+                        or not suffix.isdigit()
+                        or int(suffix) <= 0
+                        or (len(suffix) > 1 and suffix.startswith("0"))
+                    ):
+                        diagnostics.append("material {} reference {} is malformed".format(name, index))
+                    else:
+                        shape = getattr(obj, "Shape", None)
+                        getter = getattr(shape, "getElement", None) if shape is not None else None
+                        if not callable(getter):
+                            diagnostics.append("material {} reference {} has no Shape".format(name, index))
+                        else:
+                            try:
+                                element = getter(subelement)
+                            except Exception:
+                                element = None
+                            if element is None or str(getattr(element, "ShapeType", "")) != prefix:
+                                diagnostics.append("material {} reference {} is stale".format(name, index))
+                else:
+                    shape = getattr(obj, "Shape", None)
+                    is_null = getattr(shape, "isNull", None)
+                    if shape is None or (callable(is_null) and is_null()) or (isinstance(is_null, bool) and is_null):
+                        diagnostics.append("material {} reference {} has a null Shape".format(name, index))
+            if not refs:
+                diagnostics.append("material {} requires explicit references".format(name))
+        if len(global_materials) > 1:
+            diagnostics.append("multiple global materials are ambiguous")
+        if global_materials and explicit:
+            diagnostics.append("global material cannot be mixed with explicit material references")
+
+        geometry_members: list[tuple[Any, str]] = []
+        geometry_members.extend((item, "Edge") for item in geometry_1d)
+        geometry_members.extend((item, "Face") for item in geometry_2d)
+        geometry_refs: dict[tuple[str, str], str] = {}
+        for geometry, expected_kind in geometry_members:
+            geometry_name = cls._object_id(geometry) or "ElementGeometry"
+            refs = cls._normalize_native_references(getattr(geometry, "References", None) or [])
+            for index, reference in enumerate(refs, start=1):
+                if not isinstance(reference, (tuple, list)) or len(reference) != 2:
+                    continue
+                obj, subelement = reference
+                if obj is None or not isinstance(subelement, str):
+                    continue
+                key = (cls._object_id(obj), subelement)
+                previous = geometry_refs.get(key)
+                if previous is not None and previous != geometry_name:
+                    diagnostics.append("element geometry references overlap between {} and {}".format(previous, geometry_name))
+                else:
+                    geometry_refs[key] = geometry_name
+                if not subelement.startswith(expected_kind):
+                    diagnostics.append("element geometry {} requires {} material references".format(geometry_name, expected_kind))
+        if len(material_members) > 1 and not global_materials:
+            for key, geometry_name in geometry_refs.items():
+                if key not in explicit:
+                    diagnostics.append("material coverage is missing for {} reference {}".format(geometry_name, key[1]))
         return diagnostics
 
     @staticmethod
@@ -2674,6 +3106,7 @@ class FreeCADOperations:
         element_dimension = getattr(mesh, "ElementDimension", None) if mesh is not None else None
         shell_mode = bool(geometry_2d) or element_dimension == "2D"
         beam_mode = bool(geometry_1d or rotation_1d) or element_dimension == "1D"
+        diagnostics.extend(self._material_region_diagnostics(members, geometry_1d, geometry_2d))
         if shell_mode:
             if mesh is None:
                 diagnostics.append("analysis requires a 2D mesh")
@@ -2760,6 +3193,9 @@ class FreeCADOperations:
             is_centrifugal = self._is_centrifugal(item, token)
             if "solvercalculix" in token or "femmesh" in token or "material" in token:
                 continue
+            diagnostics.extend(
+                self._constraint_transform_diagnostics(item, geometry_1d, geometry_2d)
+            )
             diagnostics.extend(self._reference_diagnostics(item))
             dof_diagnostics, translations, support = self._constraint_dof_diagnostics(item)
             diagnostics.extend(dof_diagnostics)
