@@ -384,6 +384,16 @@ CIでは既存のpytest、Ruff、Bandit、pip-audit、repository scan、Gitleaks
 keyword allowlistを検査します。任意CalculiX keyword、Python、shell command、未許可pathを入力できないこと、
 ログ・結果・captureがboundedかつsecret-redactedであることを受け入れ条件にします。
 
+**R7.6完了:** Codex CLI 0.146.0のfresh processを実MCP clientとして、更新Addonを読み込んだ
+FreeCAD 1.1.3 GUIへ接続しました。1D beam frequency解析はAnalysis、global材料、矩形断面、1D Gmsh、
+fixed、strict validation、CalculiX、mode 1取得・表示、GUI captureまで完走し、mode 1は8.37 Hz、
+`result_layout`はsource 1D／expanded 3Dでした。別Analysisの2D shell静解析も材料、板厚、2D Gmsh、
+fixed Edge、Face pressure、CalculiX、変位表示まで完走し、source 2D／expanded 3Dを確認しました。
+両jobはexit code 0、文書revisionは5、11へ単調増加し、FCStdは保存していません。GUIのmode shapeとshell
+変形カラーマップを1024×768 PNGで目視確認しました。negative実接続では`reaction`をtool schemaで拒否し、
+同一Face Contactをmodel境界で拒否してrevision 11を維持しました。security matrixはさらにthermal、
+initial gap、penetration、任意INP/Python/shell/path、未知field、非対応次元をdispatch前に拒否します。
+
 #### R7実装順序とコミット境界
 
 1. R7.0 native probeとcontract fixture

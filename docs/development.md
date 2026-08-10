@@ -113,6 +113,10 @@ $freecadRoot = Join-Path $env:LOCALAPPDATA "Programs\FreeCAD 1.1\bin"
 - `add_connection`からnative TieとHard frictionless ContactをGUI生成し、同一面・stale Faceを拒否してrevision不変を確認
 - `add_boundary_condition`からnative pinとglobal Cartesian rollerを`Fem::ConstraintDisplacement`として生成し、回転自由度、参照実在性、ゼロDOF、重複拘束、剛体運動、body-load密度を事前診断
 - Codex CLI 0.146.0から認証付きMCPへ実接続し、status、文書検査、選択、GUI capture、ツール単位承認後のview操作を確認
+- fresh Codex CLI 0.146.0からR7 beam frequencyを作成・実行し、Gmsh／CalculiX exit code 0、mode 1 8.37 Hz、source 1D／expanded 3D、mode shape GUI表示を確認
+- 同じGUI文書の別AnalysisでR7 shell staticを作成・実行し、2D mesh、fixed Edge、1000 Pa Face pressure、source 2D／expanded 3D、変位カラーマップを確認
+- R7 GUI受け入れは1024×768 PNG、文書revision 5／11、未保存FCStdを確認し、reactionと同一Face Contactのnegative実接続でrevision不変を確認
+- R7 security matrixでthermal、initial gap、penetration、reaction、任意INP／Python／shell／path、未知field、非対応mesh次元をdispatch前に拒否
 - 不正トークンによる解析変更を拒否し、FreeCADドキュメントが不変
 - 軸力棒の応力10.0 MPa（理論10.0 MPa、誤差0%）
 - 荷重端変位0.00473854 mm（理論0.00476190 mm、誤差0.4907%）

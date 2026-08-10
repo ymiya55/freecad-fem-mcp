@@ -220,6 +220,15 @@ frictionless、symmetry、antisymmetry supportの代用にはしません。表�
 
 長時間動作するMCPクライアントは、FreeCAD再起動後の最初の接続失敗時に新しい接続レコードを1回だけ再読込します。複数のFreeCAD GUIを同時起動すると最後に起動したbridgeが接続レコードを所有するため、MCP操作対象のFreeCADは1プロセスにすることを推奨します。
 
+Addon導入済み環境でnative probeやbenchmarkのために`FreeCADCmd`を起動すると、短時間だけそのprocessが
+接続レコードを更新する場合があります。CLI終了後に`bridge authentication is not configured`または
+接続先PID不在になった場合は、操作対象のFreeCAD GUIを再起動してからfresh Codex taskで`get_status`を
+再確認してください。接続レコードのtoken値を表示、コピー、ログ保存してはいけません。
+
+shell接続のcapabilityで`thermal`、`initial_gap`、`penetration`が`false`の場合、それらはnative
+property/writer契約がないか安全に表現できない機能です。`result_kinds`に`reaction`がない場合も同様で、
+値をゼロ補完したり任意INPで迂回したりしません。
+
 `get_status.capabilities.future_gates`は、現在のFreeCAD 1.1.3 native経路では利用できない機能です。
 LoadCase、複数Step、Combination、Envelope、bolt pretension、機械的初期応力／ひずみ、集中質量／
 回転慣性、damper、connector releaseを含みます。これらの名前を他のツールへ入力してもunknown field

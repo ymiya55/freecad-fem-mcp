@@ -774,6 +774,12 @@ def test_public_numeric_limits_remain_bounded() -> None:
         CreateMeshRequest(analysis_id="A" * 257)
 
 
+@pytest.mark.parametrize("dimension", ("0d", "4d", "2D", True, None))
+def test_public_mesh_element_dimension_is_strictly_closed(dimension: object) -> None:
+    with pytest.raises(ValidationError):
+        CreateMeshRequest(analysis_id="Analysis", element_dimension=dimension)
+
+
 def test_remote_load_public_request_is_closed_and_mode_specific() -> None:
     target = {"object_name": "Geometry", "subelements": ["Face1"]}
     valid = AddRemoteLoadRequest(
@@ -1693,6 +1699,48 @@ def test_addon_rejects_same_connection_face_before_dispatch() -> None:
     with pytest.raises(ServiceError):
         service(Request(801, "connection", params))
     assert len(operations.connection_calls) == before
+
+
+@pytest.mark.parametrize(
+    "escape_field",
+    (
+        "reaction",
+        "initial_gap_m",
+        "penetration_m",
+        "thermal_conductance",
+        "python",
+        "shell",
+        "shell_command",
+        "path",
+        "inp",
+    ),
+)
+def test_r76_connection_and_result_escape_fields_are_rejected_before_dispatch(
+    escape_field: str,
+) -> None:
+    """Tie/contact remain closed: no reaction, gap, thermal, code or path hooks."""
+
+    service, operations = _service()
+    params = _addon_contact_params()
+    params[escape_field] = "__import__('os').system('whoami')"
+    before = len(operations.connection_calls)
+    with pytest.raises(ServiceError, match="unknown fields"):
+        service(Request(850, "connection", params))
+    assert len(operations.connection_calls) == before
+
+
+def test_r76_reaction_result_kind_is_closed_and_native_unsupported() -> None:
+    with pytest.raises(ValidationError):
+        GetResultsRequest(analysis_id="Analysis", field="reaction")
+    service, _operations = _service()
+    with pytest.raises(ServiceError, match="unsupported"):
+        service(
+            Request(
+                851,
+                "results",
+                {"action": "get", "analysis_id": "Analysis", "field": "reaction"},
+            )
+        )
 
 
 def _addon_supported_amplitude_cases() -> tuple[tuple[str, dict[str, object], str], ...]:
@@ -2775,7 +2823,10 @@ def test_addon_status_exposes_bounded_native_element_geometry_capabilities() -> 
         "shell": True,
         "solid_shell_mixed": False,
         "thermal": False,
+        "initial_gap": False,
+        "penetration": False,
     }
+    assert "reaction" not in capabilities["result_kinds"]
     assert capabilities["result_layout"] == {
         "source_dimensions": ["1D", "2D", "3D"],
         "output_dimensions": ["2D", "3D"],
@@ -2855,6 +2906,20 @@ def test_addon_every_route_rejects_native_escape_fields(escape_field: str) -> No
         params[escape_field] = "__import__('os').system('whoami')"
         with pytest.raises(ServiceError, match="unknown fields"):
             service(Request(100, method, params))
+
+
+@pytest.mark.parametrize("escape_field", ("python", "shell", "shell_command", "path"))
+def test_addon_non_file_routes_reject_command_and_path_escape_fields(
+    escape_field: str,
+) -> None:
+    service, _operations = _service()
+    for index, ((method, _action), base) in enumerate(_ROUTE_CASES, start=1200):
+        if method in {"open", "save"}:
+            continue
+        params = dict(base)
+        params[escape_field] = "__import__('os').system('whoami')"
+        with pytest.raises(ServiceError, match="unknown fields"):
+            service(Request(index, method, params))
 
 
 @pytest.mark.parametrize(

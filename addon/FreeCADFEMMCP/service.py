@@ -1014,6 +1014,8 @@ class FEMService:
                         "shell": True,
                         "solid_shell_mixed": False,
                         "thermal": False,
+                        "initial_gap": False,
+                        "penetration": False,
                     },
                     "result_layout": {
                         "source_dimensions": ["1D", "2D", "3D"],
