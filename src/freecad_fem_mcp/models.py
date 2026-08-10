@@ -1147,6 +1147,7 @@ class AssignElementGeometryRequest(StrictModel):
     targets: Annotated[list[EntityRef], Field(min_length=1, max_length=MAX_LIST)]
 
     # Shell geometry (Fem::ElementGeometry2D).
+    formulation: Literal["shell", "membrane"] = "shell"
     thickness_m: ElementDimensionM | None = None
     offset: ElementOffset | None = None
 
@@ -1176,6 +1177,7 @@ class AssignElementGeometryRequest(StrictModel):
     @model_validator(mode="after")
     def validate_element_geometry(self) -> "AssignElementGeometryRequest":
         fields = {
+            "formulation",
             "thickness_m",
             "offset",
             "section_type",
@@ -1199,12 +1201,14 @@ class AssignElementGeometryRequest(StrictModel):
 
         if self.kind == "shell":
             _validate_element_targets(self.targets, _FACE_REF_PATTERN, "Face")
+            if self.formulation not in {"shell", "membrane"}:
+                raise ValueError("formulation is unsupported")
             if self.thickness_m is None:
                 raise ValueError("thickness_m is required for shell geometry")
             # Omitted offset means the native/default mid-plane offset of zero.
             if self.offset is None:
                 self.offset = 0.0
-            allowed = {"thickness_m", "offset"}
+            allowed = {"formulation", "thickness_m", "offset"}
             invalid = supplied.intersection(fields - allowed)
             if invalid:
                 raise ValueError(
@@ -1233,7 +1237,7 @@ class AssignElementGeometryRequest(StrictModel):
         _validate_element_targets(self.targets, _EDGE_REF_PATTERN, "Edge")
         if self.section_type is None:
             raise ValueError("section_type is required for beam_section geometry")
-        if any(field in supplied for field in ("thickness_m", "offset", "rotation_rad")):
+        if any(field in supplied for field in ("formulation", "thickness_m", "offset", "rotation_rad")):
             raise ValueError("shell/rotation fields are not valid for beam_section geometry")
 
         dimensions = {

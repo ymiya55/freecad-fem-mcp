@@ -614,6 +614,16 @@ def test_element_geometry_contract_is_closed_and_kind_specific() -> None:
     )
     assert shell.offset == 0.0
     assert shell.thickness_m == 0.002
+    assert shell.formulation == "shell"
+
+    membrane = AssignElementGeometryRequest(
+        analysis_id="Analysis",
+        kind="shell",
+        targets=face_targets,
+        formulation="membrane",
+        thickness_m=0.002,
+    )
+    assert membrane.formulation == "membrane"
 
     rectangular = AssignElementGeometryRequest(
         analysis_id="Analysis",
@@ -721,6 +731,14 @@ def test_element_geometry_contract_is_closed_and_kind_specific() -> None:
             "kind": "beam_rotation",
             "targets": edge_targets,
             "rotation_rad": True,
+        },
+        {
+            "kind": "beam_section",
+            "section_type": "rectangular",
+            "targets": edge_targets,
+            "formulation": "shell",
+            "rect_width_m": 0.02,
+            "rect_height_m": 0.04,
         },
         {
             "kind": "beam_section",

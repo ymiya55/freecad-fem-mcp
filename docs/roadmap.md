@@ -307,6 +307,13 @@ solid要素混在、回転自由度を拘束し過ぎる条件を`validate_analy
 最初の数値基準は、薄板片持ちの先端変位・固有振動数、および面内引張membrane patch testとします。
 理論値または収束解に対する許容誤差をテスト内に明記し、板厚変更に対する剛性スケーリングも確認します。
 
+**R7.2静解析範囲完了:** shell geometryへ`formulation=shell|membrane`を追加し、native
+`ExcludeBendingStiffness`へ写像しました。2D mesh、材料、板厚・offset、明示Face、beam混在、solver設定、
+membrane圧力非対応を事前診断します。FreeCAD 1.1.3のnative Gmsh／CalculiX／result pipelineを使う
+面内引張membrane patchでは、変位の理論差0.0003%未満、応力差1.63%未満で5%基準に合格しました。
+別のshell formulation解析でFace pressure、Gmsh、CalculiX、`FemPostPipeline` importの完走も確認しました。
+薄板曲げの定量値とshell固有振動数はR7.5のbeam/shell result契約と合わせて追加します。
+
 #### R7.3: Beam vertical slice
 
 1D Gmshメッシュ、global material、5種類の`ElementGeometry1D`断面、`ElementRotation1D`、

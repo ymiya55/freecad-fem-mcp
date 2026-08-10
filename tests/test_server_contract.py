@@ -210,6 +210,17 @@ def test_element_geometry_tool_forwards_fixed_route_and_closed_variants() -> Non
     )
     assert client.calls[-1][1]["rotation_rad"] == 1.5
 
+    asyncio.run(
+        geometry_fn(
+            analysis_id="Analysis",
+            kind="shell",
+            formulation="membrane",
+            targets=[{"object_name": "Plate", "subelements": ["Face1"]}],
+            thickness_m=0.001,
+        )
+    )
+    assert client.calls[-1][1]["formulation"] == "membrane"
+
     with pytest.raises(ValidationError):
         asyncio.run(
             geometry_fn(

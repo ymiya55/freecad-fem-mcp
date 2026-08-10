@@ -572,6 +572,51 @@ def test_element_geometry_shell_and_rotation_map_native_face_edge_properties() -
     assert native.References == [(app.ActiveDocument.geometry, "Edge1")]
 
 
+def test_element_geometry_membrane_maps_solver_formulation_and_rejects_mixing() -> None:
+    app, operations = _geometry_operations()
+    membrane = operations.assign_element_geometry(
+        "Analysis",
+        "shell",
+        {
+            "references": _element_refs("Face1"),
+            "formulation": "membrane",
+            "thickness_m": 0.001,
+        },
+    )
+    assert membrane["formulation"] == "membrane"
+    solver = app.ActiveDocument.analysis.Group[0]
+    assert solver.ExcludeBendingStiffness is True
+
+    operations.assign_element_geometry(
+        "Analysis",
+        "shell",
+        {
+            "references": _element_refs("Face2"),
+            "formulation": "membrane",
+            "thickness_m": 0.001,
+        },
+    )
+    before = list(app.ActiveDocument.analysis.Group)
+    with pytest.raises(OperationError):
+        operations.assign_element_geometry(
+            "Analysis",
+            "shell",
+            {"references": _element_refs("Face1"), "formulation": "shell", "thickness_m": 0.001},
+        )
+    assert app.ActiveDocument.analysis.Group == before
+    with pytest.raises(OperationError):
+        operations.assign_element_geometry(
+            "Analysis",
+            "beam_section",
+            {
+                "references": _element_refs("Edge1"),
+                "section_type": "rectangular",
+                "rect_width_m": 0.01,
+                "rect_height_m": 0.02,
+            },
+        )
+
+
 @pytest.mark.parametrize(
     "section_type,values,expected",
     [
@@ -1113,6 +1158,79 @@ def test_validate_reports_empty_reference_zero_dof_and_rigid_motion() -> None:
     assert "constraint BadDisplacement amplitude is malformed" in result["diagnostics"]
     assert "load Force has a zero direction" in result["diagnostics"]
     assert "analysis may contain unconstrained rigid-body motion" in result["diagnostics"]
+
+
+def test_validate_preserves_existing_3d_solid_requirements() -> None:
+    app, operations = _connection_operations()
+    analysis = app.ActiveDocument.analysis
+    analysis.Group.extend(
+        [
+            type(
+                "MaterialSolid",
+                (),
+                {"Name": "MaterialSolid", "Label": "MaterialSolid", "TypeId": "App::MaterialObjectPython"},
+            )(),
+            type(
+                "SolidMesh",
+                (),
+                {"Name": "SolidMesh", "Label": "SolidMesh", "TypeId": "Fem::FemMeshGmsh"},
+            )(),
+        ]
+    )
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert not any("2d mesh" in str(item).lower() for item in diagnostics)
+    assert not any("elementgeometry2d" in str(item).lower() for item in diagnostics)
+
+
+def test_validate_rejects_membrane_pressure_before_solver_start() -> None:
+    app, operations = _connection_operations()
+    analysis = app.ActiveDocument.analysis
+    solver = analysis.Group[0]
+    solver.ExcludeBendingStiffness = True
+    analysis.Group.extend(
+        [
+            type(
+                "MaterialShell",
+                (),
+                {"Name": "MaterialShell", "Label": "MaterialShell", "TypeId": "App::MaterialObjectPython"},
+            )(),
+            type(
+                "ShellMesh",
+                (),
+                {
+                    "Name": "ShellMesh",
+                    "Label": "ShellMesh",
+                    "TypeId": "Fem::FemMeshGmsh",
+                    "ElementDimension": "2D",
+                },
+            )(),
+            type(
+                "ShellGeometry",
+                (),
+                {
+                    "Name": "ShellGeometry",
+                    "Label": "ShellGeometry",
+                    "TypeId": "Fem::ElementGeometry2D",
+                    "References": [(app.ActiveDocument.geometry, "Face1")],
+                    "Thickness": "0.001 m",
+                    "Offset": 0.0,
+                },
+            )(),
+            type(
+                "Pressure",
+                (),
+                {
+                    "Name": "Pressure",
+                    "Label": "Pressure",
+                    "TypeId": "Fem::ConstraintPressure",
+                    "References": [(app.ActiveDocument.geometry, "Face1")],
+                    "Pressure": "1 Pa",
+                },
+            )(),
+        ]
+    )
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert "membrane formulation does not support ConstraintPressure" in diagnostics
 
 
 @pytest.mark.parametrize("scale", ["nan", "inf", "-inf", "1000000001"])

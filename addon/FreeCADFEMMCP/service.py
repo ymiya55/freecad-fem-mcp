@@ -86,7 +86,7 @@ _ROUTE_CONTRACTS: dict[tuple[str, str], tuple[set[str], set[str]]] = {
     ("element_geometry", "assign"): (
         {
             "action", "document_id", "analysis_id", "kind", "targets",
-            "thickness_m", "offset", "section_type", "rotation_rad",
+            "formulation", "thickness_m", "offset", "section_type", "rotation_rad",
             "rect_width_m", "rect_height_m", "circ_diameter_m",
             "pipe_diameter_m", "pipe_thickness_m", "axis1_length_m", "axis2_length_m",
             "box_width_m", "box_height_m", "box_t1_m", "box_t2_m", "box_t3_m", "box_t4_m",
@@ -399,9 +399,11 @@ class FEMService:
             return number
 
         if kind == "shell":
-            allowed = common | {"thickness_m", "offset"}
+            allowed = common | {"formulation", "thickness_m", "offset"}
             if set(params) - allowed:
                 raise ServiceError("fields are not valid for shell geometry")
+            if "formulation" in params and params["formulation"] not in {"shell", "membrane"}:
+                raise ServiceError("formulation is unsupported")
             bounded_number("thickness_m")
             if "offset" in params:
                 offset = cls._finite_value(params["offset"], "offset", strict_numeric=True)
@@ -858,7 +860,11 @@ class FEMService:
                     "result_kinds": ["displacement", "stress", "strain", "von_mises", "reaction"],
                     "element_dimensions": ["1d", "2d", "3d"],
                     "element_geometry": {
-                        "shell": {"references": "Face", "fields": ["thickness_m", "offset"]},
+                        "shell": {
+                            "references": "Face",
+                            "formulations": ["shell", "membrane"],
+                            "fields": ["formulation", "thickness_m", "offset"],
+                        },
                         "beam_section": {
                             "references": "Edge",
                             "section_types": ["rectangular", "circular", "pipe", "elliptical", "box", "truss"],

@@ -132,6 +132,17 @@ def test_element_geometry_route_forwards_explicit_native_references_and_kind() -
         },
     )
 
+    service(Request(87, "element_geometry", {
+        "action": "assign",
+        "analysis_id": "Analysis",
+        "kind": "shell",
+        "formulation": "membrane",
+        "targets": [{"object_name": "Plate", "subelements": ["Face1"]}],
+        "thickness_m": 0.001,
+    }))
+    assert operations.calls[-1][1] == "shell"
+    assert operations.calls[-1][2]["formulation"] == "membrane"
+
 
 def test_element_geometry_route_rejects_wrong_or_unwanted_fields_before_native() -> None:
     class _Selection:
@@ -163,6 +174,7 @@ def test_element_geometry_route_rejects_wrong_or_unwanted_fields_before_native()
     }
     for extra in (
         {"section_type": "rectangular"},
+        {"formulation": "invalid"},
         {"targets": [{"object_name": "Plate", "subelements": ["Edge1"]}]},
         {"targets": [{"object_name": "Plate", "subelements": ["Face1", "Face1"]}]},
         {"thickness_m": float("nan")},

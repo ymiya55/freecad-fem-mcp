@@ -137,6 +137,14 @@ def test_public_element_geometry_is_closed_discriminated_and_explicit() -> None:
         rotation_rad=0.0,
     )
     assert rotation.rotation_rad == 0.0
+    membrane = AssignElementGeometryRequest(
+        analysis_id="A",
+        kind="shell",
+        targets=[face],
+        formulation="membrane",
+        thickness_m=0.001,
+    )
+    assert membrane.formulation == "membrane"
 
     bad = (
         {"kind": "shell", "targets": [], "thickness_m": 0.001},
@@ -171,6 +179,14 @@ def test_public_element_geometry_is_closed_discriminated_and_explicit() -> None:
             "targets": [edge],
             "rotation_rad": 0.0,
             "native_property": "Rotation",
+        },
+        {
+            "kind": "beam_section",
+            "section_type": "rectangular",
+            "targets": [edge],
+            "formulation": "shell",
+            "rect_width_m": 0.01,
+            "rect_height_m": 0.02,
         },
     )
     for params in bad:
@@ -2760,6 +2776,43 @@ def test_addon_status_exposes_bounded_native_element_geometry_capabilities() -> 
     capabilities["element_geometry"]["beam_section"]["section_types"].append("escape")
     refreshed = service(Request(94, "status", {"action": "get"}))["capabilities"]
     assert "escape" not in refreshed["element_geometry"]["beam_section"]["section_types"]
+
+
+def test_addon_element_geometry_formulation_is_closed_and_forwarded() -> None:
+    service, operations = _service()
+    service(
+        Request(
+            95,
+            "element_geometry",
+            {
+                "action": "assign",
+                "analysis_id": "Analysis",
+                "kind": "shell",
+                "formulation": "membrane",
+                "targets": [{"object_name": "Geometry", "subelements": ["Face1"]}],
+                "thickness_m": 0.001,
+            },
+        )
+    )
+    assert operations.geometry_calls[-1][0][1] == "shell"
+    assert operations.geometry_calls[-1][0][2]["formulation"] == "membrane"
+    with pytest.raises(ServiceError):
+        service(
+            Request(
+                96,
+                "element_geometry",
+                {
+                    "action": "assign",
+                    "analysis_id": "Analysis",
+                    "kind": "beam_section",
+                    "formulation": "shell",
+                    "section_type": "rectangular",
+                    "targets": [{"object_name": "Geometry", "subelements": ["Edge1"]}],
+                    "rect_width_m": 0.01,
+                    "rect_height_m": 0.02,
+                },
+            )
+        )
 
 
 @pytest.mark.parametrize("escape_field", ("code", "inp", "property", "property_name", "native_property"))

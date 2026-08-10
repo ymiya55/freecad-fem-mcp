@@ -209,7 +209,16 @@ def _bridge_client_from_environment() -> BridgeClient:
 
 def _as_mapping(request: Any) -> Mapping[str, Any]:
     if hasattr(request, "model_dump"):
-        return request.model_dump(exclude_none=True)
+        values = request.model_dump(exclude_none=True)
+        # Keep the shell formulation's model default local to validation.  An
+        # omitted default is not a caller-supplied field, which preserves the
+        # established wire shape while explicit membrane/shell values still
+        # cross the bridge for the Addon to validate again.
+        if isinstance(request, AssignElementGeometryRequest):
+            fields_set = getattr(request, "model_fields_set", set())
+            if "formulation" not in fields_set:
+                values.pop("formulation", None)
+        return values
     if isinstance(request, Mapping):
         return request
     raise TypeError("request must be a validated Pydantic model")
@@ -441,7 +450,8 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
             "Assign closed native shell, beam-section, or beam-rotation geometry. "
             "Targets must be explicit FaceN references for shell geometry or "
             "EdgeN references for beam geometry; whole-object and empty targets "
-            "are not accepted. Beam dimensions are SI metres."
+            "are not accepted. Beam dimensions are SI metres. Shell formulation "
+            "defaults to shell; membrane selects the native membrane formulation."
         ),
         annotations=ann(readonly=False, destructive=False, idempotent=True),
     )
@@ -459,6 +469,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
                 ),
             ),
         ],
+        formulation: Literal["shell", "membrane"] | None = None,
         document_id: BoundedText | None = None,
         thickness_m: ElementDimensionM | None = None,
         offset: ElementOffset | None = None,
@@ -493,6 +504,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
         if document_id is not None:
             payload["document_id"] = document_id
         for name, value in (
+            ("formulation", formulation),
             ("thickness_m", thickness_m),
             ("offset", offset),
             ("section_type", section_type),

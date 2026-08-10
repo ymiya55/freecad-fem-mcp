@@ -1673,7 +1673,7 @@ class FreeCADOperations:
         if not isinstance(data, Mapping):
             raise OperationError("element geometry parameters must be an object")
         allowed_fields = {
-            "references", "name", "thickness_m", "offset", "section_type",
+            "references", "name", "formulation", "thickness_m", "offset", "section_type",
             "rect_width_m", "rect_height_m", "circ_diameter_m", "pipe_diameter_m",
             "pipe_thickness_m", "axis1_length_m", "axis2_length_m", "box_width_m",
             "box_height_m", "box_t1_m", "box_t2_m", "box_t3_m", "box_t4_m",
@@ -1692,7 +1692,10 @@ class FreeCADOperations:
         references = self._references(doc, raw_references)
         if geometry_kind == "shell":
             reference_kind = "Face"
-            dimensions = {"thickness_m", "offset"}
+            formulation = data.get("formulation", "shell")
+            if formulation not in {"shell", "membrane"}:
+                raise OperationError("formulation is unsupported")
+            dimensions = {"formulation", "thickness_m", "offset"}
             if data.get("thickness_m") is None:
                 raise OperationError("thickness_m is required for shell geometry")
             thickness = self._strict_element_number(data["thickness_m"], "thickness_m")
@@ -1778,7 +1781,10 @@ class FreeCADOperations:
         if geometry_kind == "shell":
             if existing_beams:
                 raise OperationError("shell and beam geometries cannot share one analysis")
-            if exclude_value is True:
+            if existing_shells:
+                if exclude_value != (formulation == "membrane"):
+                    raise OperationError("shell and membrane formulations cannot be mixed")
+            elif exclude_value is True and formulation == "shell":
                 raise OperationError("shell geometry conflicts with truss bending exclusion")
         elif geometry_kind == "beam_section":
             if existing_shells:
@@ -1810,7 +1816,7 @@ class FreeCADOperations:
             if geometry_kind == "shell":
                 self._element_geometry_property(obj, "Thickness", "{} m".format(thickness), type_id="App::PropertyLength")
                 self._element_geometry_property(obj, "Offset", offset, type_id="App::PropertyFloat")
-                self._set_native_required(solver, "ExcludeBendingStiffness", False)
+                self._set_native_required(solver, "ExcludeBendingStiffness", formulation == "membrane")
             elif geometry_kind == "beam_rotation":
                 self._element_geometry_property(obj, "Rotation", "{} rad".format(rotation), type_id="App::PropertyAngle")
             else:
@@ -1845,6 +1851,7 @@ class FreeCADOperations:
             "name": self._object_id(obj),
             "type": getattr(obj, "TypeId", native_type),
             "kind": geometry_kind,
+            "formulation": formulation if geometry_kind == "shell" else None,
             "section_type": section_type if geometry_kind == "beam_section" else None,
             "references": len(references),
         }
@@ -2129,6 +2136,83 @@ class FreeCADOperations:
                 diagnostics.append("constraint {} requires {} references".format(name, expected_kind))
         return diagnostics
 
+    @staticmethod
+    def _native_geometry_scalar(value: Any, unit: str | None = None) -> float | None:
+        """Read one bounded native quantity without coercing malformed values."""
+
+        candidate = value
+        if unit is not None:
+            getter = getattr(candidate, "getValueAs", None)
+            if callable(getter):
+                try:
+                    candidate = getter(unit)
+                except Exception:
+                    return None
+        if hasattr(candidate, "Value"):
+            candidate = getattr(candidate, "Value")
+        try:
+            number = float(candidate)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return number if math.isfinite(number) else None
+
+    @classmethod
+    def _element_geometry_diagnostics(cls, item: Any) -> list[str]:
+        """Validate native ElementGeometry2D schema and explicit Face refs."""
+
+        token = cls._constraint_token(item)
+        if "elementgeometry2d" not in token:
+            return []
+        name = cls._object_id(item) or "ElementGeometry2D"
+        diagnostics: list[str] = []
+        refs = cls._normalize_native_references(getattr(item, "References", None) or [])
+        if not refs:
+            return ["element geometry {} requires explicit Face references".format(name)]
+        seen: set[tuple[str, str]] = set()
+        for index, reference in enumerate(refs, start=1):
+            if not isinstance(reference, (tuple, list)) or len(reference) != 2:
+                diagnostics.append("element geometry {} reference {} is malformed".format(name, index))
+                continue
+            obj, subelement = reference
+            if obj is None or not isinstance(subelement, str):
+                diagnostics.append("element geometry {} reference {} is empty".format(name, index))
+                continue
+            object_name = str(getattr(obj, "Name", getattr(obj, "Label", "")))
+            key = (object_name, subelement)
+            if key in seen:
+                diagnostics.append("element geometry {} references must be unique".format(name))
+            seen.add(key)
+            suffix = subelement[4:] if subelement.startswith("Face") else ""
+            if (
+                not suffix
+                or not suffix.isascii()
+                or not suffix.isdigit()
+                or int(suffix) <= 0
+                or (len(suffix) > 1 and suffix.startswith("0"))
+            ):
+                diagnostics.append("element geometry {} requires Face references".format(name))
+                continue
+            shape = getattr(obj, "Shape", None)
+            getter = getattr(shape, "getElement", None) if shape is not None else None
+            if not callable(getter):
+                diagnostics.append("element geometry {} reference {} has no Shape".format(name, index))
+                continue
+            try:
+                element = getter(subelement)
+            except Exception:
+                diagnostics.append("element geometry {} reference {} is stale".format(name, index))
+                continue
+            if element is None or str(getattr(element, "ShapeType", "")) != "Face":
+                diagnostics.append("element geometry {} requires Face references".format(name))
+
+        thickness = cls._native_geometry_scalar(getattr(item, "Thickness", None), "m")
+        if thickness is None or not 0.0 < thickness <= 1e6:
+            diagnostics.append("element geometry {} has invalid thickness".format(name))
+        offset = cls._native_geometry_scalar(getattr(item, "Offset", None))
+        if offset is None or not -1.0 <= offset <= 1.0:
+            diagnostics.append("element geometry {} has invalid offset".format(name))
+        return diagnostics
+
     @classmethod
     def _constraint_dof_diagnostics(cls, item: Any) -> tuple[list[str], set[str], bool]:
         """Return DOF diagnostics, constrained translations, and support flag."""
@@ -2374,6 +2458,42 @@ class FreeCADOperations:
             diagnostics.append("analysis has no CalculiX solver")
         if mesh is None:
             diagnostics.append("analysis has no mesh")
+        geometry_2d = self._element_geometry_members(analysis_obj, "Fem::ElementGeometry2D")
+        geometry_1d = self._element_geometry_members(analysis_obj, "Fem::ElementGeometry1D")
+        element_dimension = getattr(mesh, "ElementDimension", None) if mesh is not None else None
+        shell_mode = bool(geometry_2d) or element_dimension == "2D"
+        if shell_mode:
+            if mesh is None:
+                diagnostics.append("analysis requires a 2D mesh")
+            elif element_dimension != "2D":
+                diagnostics.append("analysis requires a 2D mesh (ElementDimension=2D)")
+            material_members = [
+                item
+                for item in members
+                if "material" in (self.fem_type(item) + " " + str(getattr(item, "TypeId", ""))).lower()
+            ]
+            if not material_members:
+                diagnostics.append("analysis has no material")
+            if not geometry_2d:
+                diagnostics.append("analysis has no ElementGeometry2D shell geometry")
+            for geometry in geometry_2d:
+                diagnostics.extend(self._element_geometry_diagnostics(geometry))
+            if geometry_1d:
+                diagnostics.append("analysis cannot mix shell geometry with beam geometry")
+            if solver is None or not hasattr(solver, "ExcludeBendingStiffness"):
+                diagnostics.append("solver formulation is unavailable for shell geometry")
+            else:
+                exclusion = getattr(solver, "ExcludeBendingStiffness", None)
+                if not isinstance(exclusion, bool):
+                    diagnostics.append("solver formulation is invalid for shell geometry")
+                if geometry_2d and exclusion not in {True, False}:
+                    diagnostics.append("solver formulation does not match shell geometry")
+                if exclusion is True and any(
+                    "constraintpressure" in self._constraint_token(item) for item in members
+                ):
+                    diagnostics.append(
+                        "membrane formulation does not support ConstraintPressure"
+                    )
         if solver is not None and mesh is not None and _checksanalysis is not None and _membertools is not None:
             try:
                 member = _membertools.AnalysisMember(analysis_obj)
