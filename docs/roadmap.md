@@ -323,7 +323,7 @@ Pipeではnative要件に従い`BeamReducedIntegration`を検証・設定しま�
 
 回転境界条件は既存`add_boundary_condition`を、nullableな3成分`rotation_rad`を持つ閉じた契約へ拡張し、
 beam/shell時だけnative `rotx/roty/rotz`へ写像します。solidだけの節点へ回転自由度を指定した場合は拒否します。
-数値基準は矩形・円形・Pipe片持ちbeamの変位、反力、固有振動数、断面回転90度の主軸入替、
+数値基準は矩形・円形・Pipe片持ちbeamの変位、nativeで取得可能な結果、固有振動数、断面回転90度の主軸入替、
 およびtruss軸力patch testとします。
 
 **R7.3静解析範囲完了:** nullableな並進`displacement_m`と回転`rotation_rad`を公開契約へ追加し、
@@ -332,7 +332,8 @@ FreeCAD 1.1.3 nativeの並進・回転自由度へ写像しました。solid-onl
 `BeamReducedIntegration=false`、Pipeは`true`、trussは`ExcludeBendingStiffness=true`として曖昧な
 混在を防ぎます。実機benchmarkでは矩形片持ちbeamのEuler変位に対する相対誤差0.284%、truss軸変位の
 相対誤差0.061%で、両方ともGmsh、CalculiX、`FemPostPipeline` importまで完走しました。円形・Pipe、
-反力、断面回転、固有振動数の結果契約はR7.5で追加します。
+断面回転と固有振動数の結果契約はR7.5で追加します。FreeCAD 1.1.3 native結果に存在しない反力は
+捏造せず、将来native propertyが追加されるまで公開しません。
 
 #### R7.4: 材料、複数領域、拘束の整合
 
@@ -355,12 +356,22 @@ Rectangularの基点を使用しないため、その入力は意図的に公開
 #### R7.5: Shell tie/contactと結果契約
 
 既存`add_connection`をshell Face-to-Faceへ拡張します。FreeCAD 1.1.x native writerで確認できるtieと
-non-thermal contactだけを対象とし、shell法線、主従面、offsetを含む初期gap/penetration、板厚、同一面、
-混在solid-shell接触を診断します。自動ペアリング、熱接触、任意INP補正は追加しません。
+non-thermal contactだけを対象とし、shell法線、主従面、offset、板厚、同一面、混在solid-shell接触を
+診断します。自動ペアリング、熱接触、任意INP補正は追加しません。initial gap/penetrationはnative propertyが
+確認できた場合だけ扱い、存在しない場合は入力や推測診断を公開しません。
 
 `get_results` / `show_result`は`BeamShellResultOutput3D`のtrue/false両方を検証し、元の1D/2D節点と
-CalculiXが展開した3D結果を混同しないmetadataを返します。変位・応力・ひずみ・反力、frequency、bucklingの
+CalculiXが展開した3D結果を混同しないmetadataを返します。変位・応力・ひずみ、frequency、bucklingの
 対応block/frameを実測し、存在しない成分をゼロとして捏造しません。
+
+**R7.5完了:** shell Face-to-FaceのTie／non-thermal Contactについて、native Referencesの主従順、2D要素の
+`S2` surface、`*TIE`／`*CONTACT PAIR` writerをFreeCAD 1.1.3実機で固定しました。同一・stale・不正Face、
+shell/solid混在、参照領域の板厚・offset、法線、thermal contactを実行前に診断します。initial gap／penetrationは
+native propertyがなく、安全な推測もできないため対象外です。ResultMechanicalとFemPostPipelineでは変位、
+応力、ひずみ、von Mises、mode frequencyを確認し、reactionはnative配列がないためclosed result kindから
+除外しました。`result_layout`はsource 1D/2D/3DとCalculiX OUTPUT=2d/3dを分離します。矩形beamの1次
+固有振動数は16.75 Hz、Euler–Bernoulli解16.7103 Hzに対して相対誤差0.237%でした。2D出力は11点、展開3Dは
+44点で、両方ともGmsh、CalculiX、結果importまで完走しました。shell固有振動数の定量基準は将来追加します。
 
 #### R7.6: GUI・MCP・安全性受け入れ
 

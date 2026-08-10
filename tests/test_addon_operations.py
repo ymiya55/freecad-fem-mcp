@@ -1240,6 +1240,35 @@ def test_connection_missing_factory_or_property_aborts_transaction() -> None:
     assert len(app.ActiveDocument.analysis.Group) == 1
 
 
+def test_validate_connection_reports_shell_solid_mix_and_native_thermal_flag() -> None:
+    app, operations = _geometry_operations()
+    operations.assign_element_geometry(
+        "Analysis",
+        "shell",
+        {"references": _element_refs("Face1"), "thickness_m": 0.001},
+    )
+    connection = operations.add_connection(
+        "Analysis",
+        "contact",
+        {
+            "references": _connection_refs("Face1", "Face2"),
+            "surface_behavior": "hard",
+        },
+    )
+    native = app.ActiveDocument.analysis.Group[-1]
+    native.EnableThermalContact = True
+    mesh = type(
+        "SolidMesh",
+        (),
+        {"Name": "SolidMesh", "Label": "SolidMesh", "TypeId": "Fem::FemMeshGmsh", "ElementDimension": "3D"},
+    )()
+    app.ActiveDocument.analysis.Group.append(mesh)
+    diagnostics = operations.validate("Analysis")["diagnostics"]
+    assert connection["kind"] == "contact"
+    assert any("cannot mix shell and solid" in str(item) for item in diagnostics)
+    assert any("thermal contact is unsupported" in str(item) for item in diagnostics)
+
+
 def test_cyclic_symmetry_maps_native_tie_fields_and_preserves_face_order() -> None:
     app, operations = _connection_operations(_ObjectsFemWithR4Connections)
     result = operations.add_connection(

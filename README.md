@@ -35,7 +35,7 @@ FreeCAD 1.1.x の新しい `SolverCalculiX` フレームワークを、MCPクラ
 - native `*MPC,PLANE`共面性拘束と、原点・global +Z軸を使うcyclic symmetry Tie
 - FreeCAD 1.1のネイティブGmshメッシャー
 - FreeCAD 1.1のネイティブ`CalculiXTools`
-- `Fem::FemPostPipeline`による静解析frame、固有振動mode、座屈modeの結果照会とGUI表示
+- `Fem::FemPostPipeline`による静解析frame、固有振動mode、座屈modeの結果照会とGUI表示。beam／shellではsource次元とCalculiXの2D／展開3D出力を区別
 - GUIビューポートまたはウィンドウのキャプチャ
 
 複数step・高度な接触、熱連成、電磁解析は同じ公開設計上で段階的に追加します。

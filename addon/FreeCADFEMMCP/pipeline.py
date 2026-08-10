@@ -420,7 +420,6 @@ class FemPostPipeline:
             "stress": ("stress", "sigma"),
             "strain": ("strain", "epsilon"),
             "vonmises": ("vonmises", "mises", "equivalentstress"),
-            "reaction": ("reaction", "force"),
         }
         for candidate in aliases.get(wanted, (wanted,)):
             for name in fields:
@@ -437,7 +436,6 @@ class FemPostPipeline:
             "stress": {"stress", "sigma"},
             "strain": {"strain", "epsilon"},
             "vonmises": {"vonmises", "mises", "equivalentstress"},
-            "reaction": {"reaction", "force"},
         }
         alias_values = alias_map.get(selected_key, {selected_key} if selected_key is not None else set())
         if selected_key is not None and selected_key not in alias_map:

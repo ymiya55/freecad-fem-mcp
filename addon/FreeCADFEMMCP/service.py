@@ -159,6 +159,68 @@ class FEMService:
                 return item
         raise ServiceError("analysis has no mesh")
 
+    @staticmethod
+    def _analysis_domain(analysis: Any) -> str:
+        """Return the bounded native result domain for metadata."""
+
+        members = list(getattr(analysis, "Group", []) or [])
+        if any(FreeCADOperations.fem_type(item) == "Fem::ElementGeometry2D" for item in members):
+            return "shell"
+        if any(FreeCADOperations.fem_type(item) in {"Fem::ElementGeometry1D", "Fem::ElementRotation1D"} for item in members):
+            return "beam"
+        mesh = next((item for item in members if "FemMesh" in str(getattr(item, "TypeId", ""))), None)
+        dimension = str(getattr(mesh, "ElementDimension", "")).strip().lower() if mesh is not None else ""
+        return {"1d": "beam", "2d": "shell", "3d": "solid"}.get(dimension, "solid")
+
+    @staticmethod
+    def _result_layout(analysis: Any, solver: Any) -> dict[str, Any]:
+        """Describe native 1D/2D versus expanded 3D result output.
+
+        CalculiX writes ``OUTPUT=2d`` for beam/shell results when
+        ``BeamShellResultOutput3D`` is false and ``OUTPUT=3d`` when true.
+        The source mesh dimension is retained separately so callers never
+        confuse an expanded 3D result with a native 3D model.
+        """
+
+        members = list(getattr(analysis, "Group", []) or []) if analysis is not None else []
+        geometry_dimensions = {
+            "1D"
+            if FreeCADOperations.fem_type(item) == "Fem::ElementGeometry1D"
+            else "2D"
+            for item in members
+            if FreeCADOperations.fem_type(item)
+            in {"Fem::ElementGeometry1D", "Fem::ElementGeometry2D"}
+        }
+        if len(geometry_dimensions) == 1:
+            source_dimension = next(iter(geometry_dimensions))
+        elif geometry_dimensions:
+            source_dimension = "mixed"
+        else:
+            mesh = next(
+                (item for item in members if "FemMesh" in str(getattr(item, "TypeId", ""))),
+                None,
+            )
+            source_dimension = {
+                "1d": "1D",
+                "2d": "2D",
+                "3d": "3D",
+            }.get(str(getattr(mesh, "ElementDimension", "")).strip().lower(), "unknown")
+        native_flag = getattr(solver, "BeamShellResultOutput3D", None)
+        if source_dimension in {"1D", "2D", "mixed"} and isinstance(native_flag, bool):
+            return {
+                "source_dimension": source_dimension,
+                "output_dimension": "3D" if native_flag else "2D",
+                "expanded_3d": native_flag,
+                "beam_shell_result_output_3d": native_flag,
+            }
+        output_dimension = "3D" if source_dimension == "3D" else "unknown"
+        return {
+            "source_dimension": source_dimension,
+            "output_dimension": output_dimension,
+            "expanded_3d": False,
+            "beam_shell_result_output_3d": None,
+        }
+
     def _validate_route_contract(self, method: str, params: Mapping[str, Any]) -> None:
         """Validate the closed public field set before dispatching an action.
 
@@ -328,7 +390,7 @@ class FEMService:
         if method == "results":
             cls._require_identifier(params, "analysis_id")
             if "field" in params and params["field"] is not None and params["field"] not in {
-                "displacement", "stress", "strain", "von_mises", "reaction"
+                "displacement", "stress", "strain", "von_mises"
             }:
                 raise ServiceError("result field is unsupported")
             if "max_items" in params:
@@ -947,8 +1009,20 @@ class FEMService:
                         "fixed", "displacement", "pin", "roller", "remote_displacement",
                     ],
                     "connections": ["tie", "contact", "cyclic_symmetry"],
+                    "connection_surfaces": {
+                        "references": "Face",
+                        "shell": True,
+                        "solid_shell_mixed": False,
+                        "thermal": False,
+                    },
+                    "result_layout": {
+                        "source_dimensions": ["1D", "2D", "3D"],
+                        "output_dimensions": ["2D", "3D"],
+                        "beam_shell_result_output_3d": True,
+                        "supports_expanded_3d": True,
+                    },
                     "mpc_types": ["plane_rotation"],
-                    "result_kinds": ["displacement", "stress", "strain", "von_mises", "reaction"],
+                    "result_kinds": ["displacement", "stress", "strain", "von_mises"],
                     "element_dimensions": ["1d", "2d", "3d"],
                     "element_geometry": {
                         "shell": {
@@ -1197,8 +1271,10 @@ class FEMService:
         if method == "results":
             action = self._action(params, {"get", "show"})
             analysis_type = None
+            analysis = None
             if params.get("analysis_id"):
-                solver = self._solver(self._analysis(params.get("analysis_id")))
+                analysis = self._analysis(params.get("analysis_id"))
+                solver = self._solver(analysis)
                 analysis_type = getattr(solver, "AnalysisType", None)
             elif params.get("job_id"):
                 solver = self.jobs.native_object(params.get("job_id"))
@@ -1221,6 +1297,11 @@ class FEMService:
                     mode=mode,
                     analysis_type=analysis_type,
                 )
+                summary["analysis_domain"] = self._analysis_domain(analysis) if analysis is not None else "solid"
+                summary["result_layout"] = self._result_layout(
+                    analysis,
+                    solver,
+                )
                 related = self.jobs.find_for_object(solver, "calculix")
                 if isinstance(related, Mapping) and related.get("convergence") is not None:
                     summary["convergence"] = related["convergence"]
@@ -1228,6 +1309,11 @@ class FEMService:
             summary = self.pipeline.show_native(
                 results, params.get("field"), frame, limit, mode=mode,
                 analysis_type=analysis_type,
+            )
+            summary["analysis_domain"] = self._analysis_domain(analysis) if analysis is not None else "solid"
+            summary["result_layout"] = self._result_layout(
+                analysis,
+                solver,
             )
             related = self.jobs.find_for_object(solver, "calculix")
             if isinstance(related, Mapping) and related.get("convergence") is not None:

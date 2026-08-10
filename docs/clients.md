@@ -180,6 +180,16 @@ Tieは`tolerance_m`と`adjust`が必須です。Contactはstatic・non-thermal�
 `friction_coefficient`、正の`stick_stiffness_pa_per_m`を指定します。`adjust_m`は0〜1e6 mです。
 剛性はSIのPa/mで入力し、MCPがFreeCAD native quantityへ変換します。摩擦fieldはTie/Cyclicへ、
 Tie fieldはContactへ指定できません。同一面、stale参照、Edge/Vertexは拒否します。
+2D shell Face同士のTie／Contactも同じAPIを使用します。native writerで主従面の`S2` surfaceを生成しますが、
+shellとsolidの混在pair、無効な板厚・offset、ゼロ法線、thermal contactは事前検証で拒否します。
+FreeCAD 1.1.3にはinitial gap／penetration専用のTie/Contact propertyがないため、その入力や推測診断は
+公開していません。
+
+beam／shellの`get_results`と`show_result`は`analysis_domain`に加え、`result_layout`へ元モデルの
+`source_dimension`、CalculiX出力の`output_dimension`、`expanded_3d`、native
+`beam_shell_result_output_3d`を返します。展開3D結果を元から3Dのsolid解析と混同しないでください。
+公開fieldはnative pipelineで確認できる`displacement`、`stress`、`strain`、`von_mises`です。
+FreeCAD 1.1.3のResultMechanicalにreaction配列がないため、`reaction`は公開していません。
 
 cyclic symmetryも`add_connection`を使い、`connection_type=cyclic_symmetry`、Faceのslave/master、
 `tolerance_m`、`adjust`、`sectors`、`connected_sectors`を指定します。`sectors`は2〜1,000,000、

@@ -930,7 +930,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
     )
     async def get_results(
         analysis_id: BoundedText,
-        field: Literal["displacement", "stress", "strain", "von_mises", "reaction"] | None = None,
+        field: Literal["displacement", "stress", "strain", "von_mises"] | None = None,
         max_items: Annotated[StrictInt, Field(ge=1, le=10000)] = 1000,
         mode: ModeNumber | None = None,
         frame: Annotated[StrictInt, Field(ge=0, le=100000)] | None = None,
@@ -954,7 +954,7 @@ def _register_tools(app: Any, client: BridgeClient) -> Any:
     )
     async def show_result(
         analysis_id: BoundedText,
-        field: Literal["displacement", "stress", "strain", "von_mises", "reaction"] | None = None,
+        field: Literal["displacement", "stress", "strain", "von_mises"] | None = None,
         max_items: Annotated[StrictInt, Field(ge=1, le=10000)] = 1000,
         frame: Annotated[StrictInt, Field(ge=0, le=100000)] = 0,
         mode: ModeNumber | None = None,

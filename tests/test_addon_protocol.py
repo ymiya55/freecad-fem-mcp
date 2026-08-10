@@ -421,6 +421,42 @@ def test_native_vtk_pipeline_alias_and_extrema() -> None:
     assert native.ViewObject.Field == "Displacement"
 
 
+@pytest.mark.parametrize(
+    ("source_type", "output_3d", "expected_output"),
+    [
+        ("Fem::ElementGeometry1D", False, "2D"),
+        ("Fem::ElementGeometry1D", True, "3D"),
+        ("Fem::ElementGeometry2D", False, "2D"),
+        ("Fem::ElementGeometry2D", True, "3D"),
+    ],
+)
+def test_result_layout_distinguishes_native_beam_shell_and_expanded_3d(
+    source_type: str, output_3d: bool, expected_output: str
+) -> None:
+    member = type("Geometry", (), {"TypeId": source_type})()
+    analysis = type("Analysis", (), {"Group": [member]})()
+    solver = type("Solver", (), {"BeamShellResultOutput3D": output_3d})()
+    layout = FEMService._result_layout(analysis, solver)
+    expected_source = "1D" if source_type.endswith("1D") else "2D"
+    assert layout == {
+        "source_dimension": expected_source,
+        "output_dimension": expected_output,
+        "expanded_3d": output_3d,
+        "beam_shell_result_output_3d": output_3d,
+    }
+
+
+def test_result_layout_does_not_claim_3d_expansion_for_solid_or_missing_native_property() -> None:
+    mesh = type("Mesh", (), {"TypeId": "Fem::FemMeshGmsh", "ElementDimension": "3D"})()
+    solid_analysis = type("Analysis", (), {"Group": [mesh]})()
+    assert FEMService._result_layout(solid_analysis, object()) == {
+        "source_dimension": "3D",
+        "output_dimension": "3D",
+        "expanded_3d": False,
+        "beam_shell_result_output_3d": None,
+    }
+
+
 def test_gmsh_element_order_uses_freecad_enum() -> None:
     # Exercise the normalization branch without importing FreeCAD.  The
     # operation helper is intentionally pure at this boundary.

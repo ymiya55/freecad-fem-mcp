@@ -2420,6 +2420,152 @@ class FreeCADOperations:
         return diagnostics
 
     @classmethod
+    def _connection_geometry_diagnostics(
+        cls,
+        item: Any,
+        mesh: Any,
+        geometry_2d: list[Any],
+    ) -> list[str]:
+        """Validate native tie/contact face ownership and shell normals."""
+
+        token = cls._constraint_token(item)
+        if "constrainttie" not in token and "constraintcontact" not in token:
+            return []
+        name = cls._object_id(item) or "connection"
+        diagnostics: list[str] = []
+        refs = cls._normalize_native_references(getattr(item, "References", None) or [])
+        if len(refs) != 2:
+            diagnostics.append("connection {} requires exactly two Face references".format(name))
+            return diagnostics
+        connection_keys = {
+            (cls._object_id(reference[0]), reference[1])
+            for reference in refs
+            if isinstance(reference, (tuple, list))
+            and len(reference) == 2
+            and isinstance(reference[1], str)
+        }
+        keys_by_shell: set[tuple[str, str]] = set()
+        for geometry in geometry_2d:
+            geometry_refs = cls._normalize_native_references(
+                getattr(geometry, "References", None) or []
+            )
+            geometry_keys = {
+                (cls._object_id(reference[0]), reference[1])
+                for reference in geometry_refs
+                if isinstance(reference, (tuple, list))
+                and len(reference) == 2
+                and isinstance(reference[1], str)
+            }
+            if not connection_keys.intersection(geometry_keys):
+                continue
+            for reference in geometry_refs:
+                if isinstance(reference, (tuple, list)) and len(reference) == 2:
+                    obj, subelement = reference
+                    if isinstance(subelement, str):
+                        keys_by_shell.add((cls._object_id(obj), subelement))
+            thickness = cls._native_geometry_scalar(getattr(geometry, "Thickness", None), "m")
+            offset = cls._native_geometry_scalar(getattr(geometry, "Offset", None))
+            if thickness is None or not 0.0 < thickness <= 1e6:
+                diagnostics.append("connection {} shell thickness is invalid".format(name))
+            if offset is None or not -1.0 <= offset <= 1.0:
+                diagnostics.append("connection {} shell offset is invalid".format(name))
+        shell_flags: list[bool] = []
+        normals: list[tuple[float, float, float] | None] = []
+        for index, reference in enumerate(refs, start=1):
+            if not isinstance(reference, (tuple, list)) or len(reference) != 2:
+                diagnostics.append("connection {} reference {} is malformed".format(name, index))
+                shell_flags.append(False)
+                normals.append(None)
+                continue
+            obj, subelement = reference
+            key = (cls._object_id(obj), subelement)
+            is_shell = key in keys_by_shell or getattr(mesh, "ElementDimension", None) == "2D"
+            shell_flags.append(is_shell)
+            shape = getattr(obj, "Shape", None)
+            getter = getattr(shape, "getElement", None) if shape is not None else None
+            face = None
+            if callable(getter) and isinstance(subelement, str):
+                try:
+                    face = getter(subelement)
+                except Exception:
+                    face = None
+            normal = None
+            normal_at = getattr(face, "normalAt", None) if face is not None else None
+            if callable(normal_at):
+                try:
+                    normal = normal_at(0.0, 0.0)
+                except Exception:
+                    try:
+                        normal = normal_at(0.0)
+                    except Exception:
+                        normal = None
+            values = cls._native_vector_values(normal)
+            if values is not None:
+                length = math.sqrt(sum(component * component for component in values))
+                if length <= 1e-12:
+                    diagnostics.append("connection {} face {} has a zero normal".format(name, index))
+                normals.append(values)
+            else:
+                # Lightweight test doubles and imported shapes may not expose
+                # normalAt; absence is not itself a native schema failure.
+                normals.append(None)
+        if shell_flags[0] != shell_flags[1]:
+            diagnostics.append("connection {} cannot mix shell and solid faces".format(name))
+        if shell_flags and any(shell_flags) and getattr(mesh, "ElementDimension", None) not in {None, "2D"}:
+            diagnostics.append("connection {} shell faces require a 2D mesh".format(name))
+        if normals[0] is not None and normals[1] is not None:
+            first = normals[0]
+            second = normals[1]
+            first_len = math.sqrt(sum(component * component for component in first))
+            second_len = math.sqrt(sum(component * component for component in second))
+            if first_len > 0.0 and second_len > 0.0:
+                dot = sum(a * b for a, b in zip(first, second)) / (first_len * second_len)
+                if not math.isfinite(dot):
+                    diagnostics.append("connection {} face normals are non-finite".format(name))
+        return diagnostics
+
+    @classmethod
+    def _connection_property_diagnostics(cls, item: Any) -> list[str]:
+        """Validate persisted Tie/Contact writer properties."""
+
+        token = cls._constraint_token(item)
+        if "constrainttie" not in token and "constraintcontact" not in token:
+            return []
+        name = cls._object_id(item) or "connection"
+        diagnostics: list[str] = []
+        if "constrainttie" in token:
+            tolerance = cls._native_geometry_scalar(getattr(item, "Tolerance", None), "m")
+            if tolerance is None or tolerance < 0.0 or tolerance > 1e9:
+                diagnostics.append("connection {} has invalid tie tolerance".format(name))
+            if not isinstance(getattr(item, "Adjust", None), bool):
+                diagnostics.append("connection {} has invalid tie Adjust".format(name))
+            return diagnostics
+        surface = str(getattr(item, "SurfaceBehavior", "")).strip().lower()
+        if surface not in {"hard", "linear", "tied"}:
+            diagnostics.append("connection {} has invalid contact SurfaceBehavior".format(name))
+        friction = getattr(item, "Friction", False)
+        if not isinstance(friction, bool):
+            diagnostics.append("connection {} has invalid contact Friction".format(name))
+        thermal = getattr(item, "EnableThermalContact", False)
+        if thermal is True:
+            diagnostics.append("connection {} thermal contact is unsupported".format(name))
+        adjust = cls._native_geometry_scalar(getattr(item, "Adjust", None), "m")
+        if adjust is not None and (adjust < 0.0 or adjust > 1e9):
+            diagnostics.append("connection {} has invalid contact Adjust".format(name))
+        if surface in {"linear", "tied"}:
+            slope = cls._native_geometry_scalar(getattr(item, "Slope", None), "Pa/m")
+            if slope is None or slope <= 0.0 or slope > 1e15:
+                diagnostics.append("connection {} has invalid contact slope".format(name))
+        if friction:
+            coefficient = cls._native_geometry_scalar(getattr(item, "FrictionCoefficient", None))
+            stick = cls._native_geometry_scalar(getattr(item, "StickSlope", None), "Pa/m")
+            if coefficient is None or not 0.0 < coefficient <= 10.0:
+                diagnostics.append("connection {} has invalid friction coefficient".format(name))
+            if stick is None or not 0.0 < stick <= 1e15:
+                diagnostics.append("connection {} has invalid stick slope".format(name))
+        return diagnostics
+
+    @classmethod
     def _native_vector_values(cls, value: Any) -> tuple[float, float, float] | None:
         """Read a native vector without accepting arbitrary client objects."""
 
@@ -3193,6 +3339,8 @@ class FreeCADOperations:
             is_centrifugal = self._is_centrifugal(item, token)
             if "solvercalculix" in token or "femmesh" in token or "material" in token:
                 continue
+            diagnostics.extend(self._connection_geometry_diagnostics(item, mesh, geometry_2d))
+            diagnostics.extend(self._connection_property_diagnostics(item))
             diagnostics.extend(
                 self._constraint_transform_diagnostics(item, geometry_1d, geometry_2d)
             )

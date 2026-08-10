@@ -2770,6 +2770,18 @@ def test_addon_status_exposes_bounded_native_element_geometry_capabilities() -> 
     service, _operations = _service()
     capabilities = service(Request(93, "status", {"action": "get"}))["capabilities"]
     assert capabilities["element_dimensions"] == ["1d", "2d", "3d"]
+    assert capabilities["connection_surfaces"] == {
+        "references": "Face",
+        "shell": True,
+        "solid_shell_mixed": False,
+        "thermal": False,
+    }
+    assert capabilities["result_layout"] == {
+        "source_dimensions": ["1D", "2D", "3D"],
+        "output_dimensions": ["2D", "3D"],
+        "beam_shell_result_output_3d": True,
+        "supports_expanded_3d": True,
+    }
     assert capabilities["element_geometry"]["shell"]["references"] == "Face"
     assert capabilities["element_geometry"]["beam_section"]["references"] == "Edge"
     assert capabilities["element_geometry"]["beam_rotation"]["references"] == "Edge"

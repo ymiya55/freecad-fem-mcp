@@ -593,7 +593,7 @@ class JobsRequest(StrictModel):
 class ResultsRequest(StrictModel):
     analysis_id: BoundedText
     job_id: BoundedText | None = None
-    field: Literal["displacement", "stress", "strain", "von_mises", "reaction"] | None = None
+    field: Literal["displacement", "stress", "strain", "von_mises"] | None = None
     max_items: Annotated[StrictInt, Field(ge=1, le=10000)] = 1000
     mode: ModeNumber | None = None
     frame: ResultFrame = 0
@@ -1428,7 +1428,7 @@ class CancelJobRequest(StrictModel):
 
 class GetResultsRequest(StrictModel):
     analysis_id: BoundedText
-    field: Literal["displacement", "stress", "strain", "von_mises", "reaction"] | None = None
+    field: Literal["displacement", "stress", "strain", "von_mises"] | None = None
     max_items: Annotated[StrictInt, Field(ge=1, le=10000)] = 1000
     # ``frame`` remains available for the existing static FemPostPipeline API.
     # ``mode`` selects one native modal frame.  They are mutually exclusive
