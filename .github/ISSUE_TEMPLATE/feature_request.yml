@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a bounded FreeCAD 1.1.x native FEM capability
+title: "[Feature]: "
+labels: []
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Engineering use case
+      description: Describe the analysis workflow and why the capability is needed.
+    validations:
+      required: true
+  - type: textarea
+    id: public_contract
+    attributes:
+      label: Proposed MCP contract
+      description: Describe inputs, units, bounds, outputs, and intentionally unsupported cases.
+    validations:
+      required: true
+  - type: input
+    id: native_object
+    attributes:
+      label: FreeCAD 1.1.x native object or factory
+      description: Provide the exact object/factory name, or state that none is known.
+    validations:
+      required: true
+  - type: input
+    id: native_writer
+    attributes:
+      label: Native CalculiX writer
+      description: Provide the exact writer/module name, or state that none is known.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and validation considerations
+      description: Identify reference checks, bounds, transactions, filesystem/process effects, and failure behavior.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope checks
+      options:
+        - label: The request targets the FreeCAD 1.1.x SolverCalculiX framework, not the legacy solver path.
+          required: true
+        - label: The proposal does not require arbitrary Python, shell commands, INP fragments, or unrestricted file access.
+          required: true

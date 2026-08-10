@@ -16,25 +16,26 @@ jobs:
     name: Bandit and pip-audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
           cache: pip
-      - name: Install audit tools and package
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade "setuptools>=83.0.0"
-          python -m pip install -e ".[dev]"
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check "uv==0.11.7"
+      - name: Synchronize the locked environment
+        run: uv sync --frozen --extra dev
       - name: Bandit (repository policy)
-        run: bandit -c .bandit -r src addon scripts security -lll -iii
+        run: uv run --frozen --extra dev bandit -c .bandit -r src addon scripts security -lll -iii
       - name: pip-audit dependencies (exclude editable project)
         # The project is installed editable so tests/imports use src/.  Audit
         # its resolved third-party environment separately; pip-audit cannot
         # vulnerability-score the local checkout itself.
-        run: pip-audit --local --skip-editable
+        run: uv run --frozen --extra dev pip-audit --local --skip-editable
       - name: Repository security gate
-        run: python scripts/security_scan.py
+        run: uv run --frozen python scripts/security_scan.py
 
   secrets:
     name: Secret scan
@@ -43,13 +44,13 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v3
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: 'false'

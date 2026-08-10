@@ -1,0 +1,75 @@
+name: Bug report
+description: Report a reproducible FreeCAD FEM MCP failure
+title: "[Bug]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not disclose vulnerabilities here. Use the private reporting link in SECURITY.md.
+        Remove credentials, private model data, user names, and absolute local paths.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What failed, and what did you expect instead?
+    validations:
+      required: true
+  - type: input
+    id: freecad_version
+    attributes:
+      label: FreeCAD version
+      placeholder: "1.1.3"
+    validations:
+      required: true
+  - type: input
+    id: calculix_version
+    attributes:
+      label: CalculiX version
+      placeholder: "2.22"
+    validations:
+      required: true
+  - type: input
+    id: gmsh_version
+    attributes:
+      label: Gmsh version
+      placeholder: "4.15.0"
+  - type: input
+    id: project_version
+    attributes:
+      label: Project version or commit
+      placeholder: "v0.1.0 or commit SHA"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: List the MCP calls, GUI actions, and minimal non-sensitive model needed to reproduce the failure.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Paste bounded logs or validation diagnostics after removing sensitive and local information.
+      render: text
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Regression
+      options:
+        - Unknown
+        - Yes, this worked previously
+        - No, this has never worked
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Disclosure checks
+      options:
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I removed credentials, private model data, user names, and absolute local paths.
+          required: true

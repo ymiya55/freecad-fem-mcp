@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.pytest-temp/
 .tmp/
 .mypy_cache/
 .ruff_cache/
@@ -38,5 +39,6 @@ freecad.log
 FreeCADFEMMCP.backup-*/
 *.bak-*
 *.tmp-*
-.uv-cache/
-.uv-python/
+.uv-cache*/
+.uvcache*/
+.uv-python*/

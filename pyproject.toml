@@ -8,11 +8,30 @@ version = "0.1.0"
 description = "Safe MCP bridge for FreeCAD FEM SolverCalculiX workflows"
 readme = "README.md"
 requires-python = ">=3.11"
-classifiers = ["Operating System :: Microsoft :: Windows"]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "FreeCAD FEM MCP contributors" }]
+keywords = ["freecad", "fem", "calculix", "mcp"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+]
 dependencies = [
   "mcp>=2,<3",
   "pydantic>=2,<3",
 ]
+
+[project.urls]
+Repository = "https://github.com/ymiya55/freecad-fem-mcp"
+Issues = "https://github.com/ymiya55/freecad-fem-mcp/issues"
+Documentation = "https://github.com/ymiya55/freecad-fem-mcp/tree/main/docs"
 
 [project.optional-dependencies]
 dev = [
