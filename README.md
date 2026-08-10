@@ -4,134 +4,102 @@
 [![Security checks](https://github.com/ymiya55/freecad-fem-mcp/actions/workflows/security.yml/badge.svg)](https://github.com/ymiya55/freecad-fem-mcp/actions/workflows/security.yml)
 [![CodeQL](https://github.com/ymiya55/freecad-fem-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/ymiya55/freecad-fem-mcp/actions/workflows/codeql.yml)
 
-FreeCAD 1.1.x の新しい `SolverCalculiX` フレームワークを、MCPクライアントからGUI付きで操作するためのWindows向けMCPサーバーです。外部のstdio MCPプロセスと、FreeCAD内で動く最小Addonを、認証付きlocalhostブリッジで接続します。
+[日本語](README.ja.md)
 
-旧 `SolverCcxTools` / `femtools.ccxtools` には対応しません。
+FreeCAD FEM MCP lets an AI assistant prepare, solve, and review native FreeCAD FEM analyses through the FreeCAD GUI. It uses FreeCAD 1.1 `SolverCalculiX`, Gmsh, and CalculiX; it does not use the legacy `SolverCcxTools` workflow.
 
-## 対応環境
+> [!IMPORTANT]
+> This is an FEM analysis MCP, not a CAD modeling MCP. The geometry must already exist in the active FreeCAD document or in a model opened from an allowed path. Create and edit geometry manually in FreeCAD, or use a separate modeling tool or MCP before starting the FEM workflow.
+
+## What you can analyze
+
+| Area | Current capability |
+|---|---|
+| Analysis types | Static, natural frequency, and linear buckling |
+| Model dimensions | 3D solid, 2D shell/membrane, and 1D beam/truss |
+| Materials | Isotropic linear elasticity; isotropic or kinematic hardening for single-step nonlinear statics |
+| Supports | Fixed, prescribed displacement/rotation, pin, roller, and remote displacement |
+| Loads | Force, pressure, gravity, acceleration, centrifugal load, remote force, and remote moment |
+| Connections | Tie, native contact, cyclic-symmetry tie, and native coplanarity MPC |
+| Meshing and solve | Native FreeCAD Gmsh and CalculiX tools |
+| Results | Displacement, stress, strain, von Mises stress, frequency modes, and buckling modes |
+
+See [Capabilities](docs/capabilities.md) for the supported combinations, engineering meaning, and current limitations.
+
+## Requirements
 
 - Windows
 - FreeCAD `>=1.1.3,<1.2`
-- Python 3.11以上
+- Python 3.11 or newer
 - [uv](https://docs.astral.sh/uv/)
-- FreeCADに同梱または設定されたGmsh / CalculiX
+- Gmsh and CalculiX configured in FreeCAD
 
-検証環境はFreeCAD 1.1.3、Python 3.11.14、Gmsh 4.15.0、CalculiX 2.22です。
+The verified baseline is FreeCAD 1.1.3, Python 3.11.14, Gmsh 4.15.0, and CalculiX 2.22.
 
-## 現在の範囲
+## Quick start with Codex
 
-現在のリリースは既存形状に対する3D線形・単一step非線形静解析、固有振動、線形座屈の縦切りを対象にします。
-
-- 開いているFCStd、または許可ルート内のモデルを使用
-- GUI選択または明示的なObject/Face参照
-- 等方線形弾性材料
-- fixed / displacement / pin / roller / remote displacement / force / pressure / gravity・任意加速度・遠心力
-- 用途別の`add_boundary_condition` / `add_load`と、移行用の`add_constraint`
-- FreeCADの`ConstraintRigidBody`によるglobal remote force / remote moment / remote displacement
-- force・pressure・displacement・remote条件のboundedなtabular amplitude
-- `SolverCalculiX`のfrequency（モード数・周波数範囲）とbuckling（係数数・精度）
-- static解析の幾何学的非線形、native single-step時間増分、等方／移動硬化の材料非線形
-- static解析のFace-to-Face TieとHard／Linear／Tied Contact、任意のbounded摩擦
-- native `*MPC,PLANE`共面性拘束と、原点・global +Z軸を使うcyclic symmetry Tie
-- FreeCAD 1.1のネイティブGmshメッシャー
-- FreeCAD 1.1のネイティブ`CalculiXTools`
-- `Fem::FemPostPipeline`による静解析frame、固有振動mode、座屈modeの結果照会とGUI表示。beam／shellではsource次元とCalculiXの2D／展開3D出力を区別
-- GUIビューポートまたはウィンドウのキャプチャ
-
-複数step・高度な接触、熱連成、電磁解析は同じ公開設計上で段階的に追加します。
-
-## セットアップ
-
-依存関係を作成します。
+From PowerShell in the repository directory:
 
 ```powershell
-uv sync --extra dev
-```
-
-まず変更内容を確認できます。
-
-```powershell
-.\scripts\install.ps1 -WhatIf
-```
-
-AddonだけをユーザーのFreeCAD Modディレクトリへ導入する場合:
-
-```powershell
+uv sync
 .\scripts\install.ps1 -SkipMcpConfig
+codex mcp add freecad-fem -- uv run --project "$PWD" freecad-fem-mcp
+codex mcp get freecad-fem
 ```
 
-FreeCAD 1.1.xではAddonは`%APPDATA%\FreeCAD\v1-1\Mod\FreeCADFEMMCP`へ導入されます。更新時のバックアップは、FreeCADが古いコピーをAddonとして読み込まないよう`%APPDATA%\FreeCAD\v1-1\FreeCADFEMMCP-backups`へ保存します。
+Then:
 
-特定のMCPクライアント設定へ登録する場合は、設定ファイルを明示します。既存ファイルは変更前にバックアップされます。
+1. Restart FreeCAD and open an `FCStd` model that contains geometry.
+2. Restart Codex or start a new task.
+3. Ask Codex to check the connection:
 
-```powershell
-.\scripts\install.ps1 -McpConfigPath "<MCP client config path>"
+```text
+Use only the freecad-fem MCP. Run get_status and inspect_document,
+then report the FreeCAD version, active document, and model objects.
+Do not use shell commands.
 ```
 
-登録されるstdioコマンドは次と同等です。
+Continue with [Your first analysis](docs/first-analysis.md) to solve a guided cantilever model.
 
-```json
-{
-  "command": "uv",
-  "args": ["run", "--project", "<repository path>", "freecad-fem-mcp"]
-}
-```
+For Claude Desktop, installation checks, updates, removal, and a setup that does not use the installer script, see [Setup](docs/setup.md), including [Manual installation](docs/setup.md#manual-installation).
 
-その後FreeCADを起動します。AddonはFreeCAD起動時にloopbackブリッジを開始し、MCPサーバーは `%LOCALAPPDATA%\freecad-fem-mcp\bridge-v1.json` から接続情報を検出します。
+## Typical engineering workflow
 
-`open_model`を使う場合は許可ルートが必須です。環境変数`FREECAD_FEM_ALLOWED_ROOTS`へWindowsではセミコロン区切りで設定するか、FreeCADの`User parameter:BaseApp/Preferences/Mod/FreeCADFEMMCP`にある`AllowedRoots`を設定します。未設定でも、GUIで既に開いているドキュメントは操作できます。
+1. Open an existing model in FreeCAD.
+2. Inspect the document and select model faces or edges in the GUI.
+3. Create an analysis and assign SI material properties.
+4. Add supports, loads, element geometry, and connections.
+5. Create a Gmsh mesh and inspect the completed mesh job.
+6. Validate the analysis before solving.
+7. Start CalculiX and monitor the solver job.
+8. Read numerical results, display a result contour, and optionally isolate the mesh or result object for capture.
+9. Save explicitly only after reviewing the model.
 
-導入状態の確認と削除:
+See [Daily workflow](docs/daily-workflow.md) ([日本語](docs/daily-workflow.ja.md)) for recommended checkpoints and review practices.
 
-```powershell
-.\scripts\check.ps1 -SkipMcpConfig
-.\scripts\uninstall.ps1 -SkipMcpConfig
-```
+## Documentation
 
-## MCPツール
+### For analysts
 
-| 分類 | ツール |
-|---|---|
-| 状態・GUI | `get_status`, `inspect_document`, `get_selection`, `set_view`, `capture_gui` |
-| ファイル | `open_model`, `save_document` |
-| 解析構築 | `create_analysis`, `assign_material`, `assign_element_geometry`, `add_boundary_condition`, `add_load`, `add_remote_load`, `add_remote_displacement`, `add_connection`, `add_constraint`, `create_mesh`, `validate_analysis` |
-| ジョブ | `start_analysis`, `get_job`, `list_jobs`, `cancel_job` |
-| 結果 | `get_results`, `show_result` |
+- [Setup](docs/setup.md) · [日本語](docs/setup.ja.md)
+- [Structural analysis examples](docs/examples/README.md)
+- [Your first analysis](docs/first-analysis.md) · [日本語](docs/first-analysis.ja.md)
+- [Capabilities](docs/capabilities.md) · [日本語](docs/capabilities.ja.md)
+- [Troubleshooting](docs/troubleshooting.md) · [日本語](docs/troubleshooting.ja.md)
+- [Tool reference](docs/tool-reference.md) · [日本語](docs/tool-reference.ja.md)
+- [Daily workflow](docs/daily-workflow.md) · [日本語](docs/daily-workflow.ja.md)
 
-公開ツールごとに入力スキーマと副作用annotationを固定しています。汎用action、任意Python、任意シェル、任意INP、任意ファイル読取ツールはありません。
-`get_status`の`capabilities.future_gates`には、FreeCAD 1.1.3でnative object/writerが揃わず公開していないR6機能を列挙します。これは利用可能機能ではなく、明示的な非対応・将来計画です。
+### For developers
 
-## 基本ワークフロー
+- [Architecture](docs/developer/architecture.md)
+- [Development guide](docs/developer/development.md)
+- [Release guide](docs/developer/releasing.md)
+- [Security design](docs/developer/security.md)
 
-1. FreeCADでFCStdを開くか、`open_model`を使います。
-2. 拘束を与える面をGUIで選択し、`get_selection`で確認します。
-3. `create_analysis`でAnalysisと新`SolverCalculiX`を作成します。`analysis_type`は`static`、`frequency`、`buckling`から選び、frequencyではモード数と任意の周波数上下限、bucklingでは係数数と精度を指定します。
-4. `assign_material`でPa・kg/m³単位の材料値を設定します。`targets`を省略するとglobal材料、明示するとbeam Edge／shell Faceなどの領域材料になり、複数領域の重複や未割当は事前診断されます。1D beam／2D shellでは、`assign_element_geometry`で明示Edgeへのbeam断面・断面回転、または明示Faceへのshell板厚・offsetをSI単位で割り当てます。beam断面は矩形、円形、Pipe、楕円、Box、truss presetに対応します。shellの`formulation`は曲げ剛性を持つ`shell`または面内剛性だけの`membrane`です。
-5. `add_boundary_condition`でfixed、displacement、pinまたはrollerを、`add_load`でforce、pressure、gravity、accelerationまたはcentrifugalを追加します。displacementは並進`displacement_m`とbeam用回転`rotation_rad`を自由度ごとに数値または`null`で指定し、少なくとも1自由度を拘束します。solidだけの解析への回転指定は拒否します。pinは並進3自由度を拘束して回転を自由にし、rollerはglobalのx/y/z軸または軸に平行な単位normalで指定した並進1自由度だけを拘束します。force・pressure・displacement・remote条件には、先頭0秒かつ時刻が厳密増加する2〜256点の`amplitude`（`time_s`と無次元`scale`）を指定できます。remote force / momentには`add_remote_load`、remote displacementには`add_remote_displacement`を使い、結合領域とglobal参照点を明示します。static解析のTie、cyclic symmetryまたはnative Contactは`add_connection`でslave/master Faceを各1面指定します。ContactはHard／Linear／Tiedと、boundedな法線・stick剛性、摩擦係数、adjustを扱います。native共面性MPCは`add_constraint`の`plane_rotation`を使います。centrifugalは回転周波数をHz、回転軸を直線Edgeで指定します。通常荷重でtargetsを省略した場合は現在のGUI選択を使いますが、remote条件のtargetsは必須です。`add_constraint`のその他の種別は既存クライアントの移行用です。
-6. `create_mesh`でGmshジョブを開始し、`get_job`で完了を待ちます。`element_dimension`は`1d`、`2d`、`3d`から明示し、既定値は従来のsolid解析と互換な`3d`です。
-7. `validate_analysis`でFreeCAD公式のCalculiX事前検証を通します。
-8. `start_analysis`でCalculiXジョブを開始します。
-9. `get_results` / `show_result` / `capture_gui`で数値とGUIを検証します。frequency / bucklingでは`mode`を1〜100で指定し、静解析用の非ゼロ`frame`とは同時指定しません。
-10. 保存が必要な場合だけ`save_document`を明示的に呼びます。
+## Safety model
 
-解析オブジェクトの変更はFreeCADのUndoトランザクションに入ります。自動保存は行いません。既存ファイルを上書きする場合は`overwrite=true`と一致する`expected_revision`が必要です。
+The MCP exposes a fixed set of typed FEM operations. It does not expose arbitrary Python, shell commands, CalculiX input fragments, dynamic imports, or unrestricted file access. Model changes participate in FreeCAD undo transactions and are not saved automatically. Overwriting an existing file requires explicit confirmation and a matching document revision.
 
-## 開発・検証
-
-```powershell
-uv run --extra dev pytest
-uv run --extra dev ruff check .
-uv run --extra dev bandit -c .bandit -r src addon security scripts
-uv run --extra dev pip-audit --skip-editable
-.\scripts\run_security_tests.ps1 -Python ".\.venv\Scripts\python.exe"
-```
-
-詳細は[アーキテクチャ](docs/architecture.md)、[安全性](docs/security.md)、[開発ガイド](docs/development.md)を参照してください。
-
-Codex、Claude Desktop、MCP Inspectorへの接続方法と検証プロンプトは[MCPクライアント設定](docs/clients.md)にまとめています。
-
-非線形、接触、固有振動、座屈へ拡張する順序と安全なAPI境界は[次期解析機能の設計](docs/roadmap.md)を参照してください。
-
-## ライセンス
+## License
 
 MIT License

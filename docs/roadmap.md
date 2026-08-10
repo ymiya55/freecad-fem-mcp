@@ -244,7 +244,7 @@ pretension、機械的な初期応力/ひずみ、集中質量/回転慣性、da
 R6は現行対応範囲ではすべて将来計画とし、任意INPや旧solverで補完しません。
 
 **R6 gate実装完了:** 解析ツールや入力fieldは追加せず、上記9分類を
-`get_status.capabilities.future_gates`へ安定したstatus-onlyリストとして公開します。全23公開routeで
+`get_status.capabilities.future_gates`へ安定したstatus-onlyリストとして公開します。すべての公開routeで
 同名fieldがunknownとして拒否されることをsecurity testで固定し、future gateが任意INP・native
 property・legacy solverへの実行経路にならないことを確認します。
 
